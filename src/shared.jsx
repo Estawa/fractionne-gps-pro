@@ -93,7 +93,77 @@ export function playCountdownBeep(ctx, urgent = false) {
   osc.stop(ctx.currentTime + 0.2);
 }
 
-export const TOLERANCE_RATIO = 0.04;
+function createNoiseBuffer(ctx, durationSec) {
+  const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * durationSec));
+  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+  return buffer;
+}
+
+// Coup de pistolet type départ de course (bruit filtré + thump grave)
+export function playGunshot(ctx) {
+  if (!ctx) return;
+  const now = ctx.currentTime;
+
+  const noise = ctx.createBufferSource();
+  noise.buffer = createNoiseBuffer(ctx, 0.3);
+  const bandpass = ctx.createBiquadFilter();
+  bandpass.type = "bandpass";
+  bandpass.frequency.value = 1200;
+  bandpass.Q.value = 0.7;
+  const noiseGain = ctx.createGain();
+  noiseGain.gain.setValueAtTime(1, now);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+  noise.connect(bandpass);
+  bandpass.connect(noiseGain);
+  noiseGain.connect(ctx.destination);
+  noise.start(now);
+  noise.stop(now + 0.3);
+
+  const osc = ctx.createOscillator();
+  const oscGain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(150, now);
+  osc.frequency.exponentialRampToValueAtTime(40, now + 0.15);
+  oscGain.gain.setValueAtTime(0.8, now);
+  oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+  osc.connect(oscGain);
+  oscGain.connect(ctx.destination);
+  osc.start(now);
+  osc.stop(now + 0.2);
+}
+
+function playSingleClap(ctx, when) {
+  const noise = ctx.createBufferSource();
+  noise.buffer = createNoiseBuffer(ctx, 0.06);
+  const filter = ctx.createBiquadFilter();
+  filter.type = "highpass";
+  filter.frequency.value = 1000 + Math.random() * 2000;
+  const gain = ctx.createGain();
+  const vol = 0.15 + Math.random() * 0.15;
+  gain.gain.setValueAtTime(vol, when);
+  gain.gain.exponentialRampToValueAtTime(0.001, when + 0.08);
+  noise.connect(filter);
+  filter.connect(gain);
+  gain.connect(ctx.destination);
+  noise.start(when);
+  noise.stop(when + 0.1);
+}
+
+// Applaudissements de fin de séance, ~durationSec secondes
+export function playApplause(ctx, durationSec = 3) {
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  let t = 0;
+  while (t < durationSec) {
+    playSingleClap(ctx, now + t);
+    t += 0.03 + Math.random() * 0.07;
+  }
+}
+
+// Zone de tolérance : dans cet écart relatif autour de la cible, silence total
+export const TOLERANCE_RATIO = 0.07;
 export const SILENCE_CHECK_MS = 350;
 
 export function speedRatio(speed, target) {

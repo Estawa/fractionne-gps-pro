@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { storage } from "./storage.js";
 import { PRESETS } from "./presets.js";
+import { playApplause } from "./shared.jsx";
 
 // ---------- Constantes & helpers ----------
 
@@ -130,7 +131,7 @@ function playBeep(ctx, freq, duration = 0.09, gain = 0.15) {
 }
 
 // Zone de tolérance : dans cet écart relatif autour de la cible, silence total
-const TOLERANCE_RATIO = 0.04; // ±4% de la vitesse cible
+const TOLERANCE_RATIO = 0.07; // ±7% de la vitesse cible
 const SILENCE_CHECK_MS = 350; // fréquence de recontrôle pendant le silence
 
 function speedRatio(speed, target) {
@@ -395,6 +396,10 @@ export default function FractionneGPS() {
     if (prev !== null && prev !== run.phase) {
       const isSeriesBoundary = prev === "restSeries" || run.phase === "restSeries";
       playGong(ensureAudioCtx(), isSeriesBoundary ? 2 : 1);
+      if (run.phase === "finished") {
+        const ctx = ensureAudioCtx();
+        setTimeout(() => playApplause(ctx, 3), 400);
+      }
     }
     prevPhaseRef.current = run.phase;
   }, [screen, run.phase, ensureAudioCtx]);
@@ -859,10 +864,12 @@ export default function FractionneGPS() {
                         <div>
                           <p className="text-2xl font-mono font-bold">{currentSpeed.toFixed(1)}</p>
                           <p className="text-xs text-slate-500">km/h actuelle</p>
+                          <p className="text-sm font-mono text-slate-400 mt-0.5">{allureFromKmh(currentSpeed)}</p>
                         </div>
                         <div>
                           <p className={`text-2xl font-mono font-bold ${meta.color}`}>{targetSpeed?.toFixed(1)}</p>
                           <p className="text-xs text-slate-500">km/h cible</p>
+                          <p className={`text-sm font-mono mt-0.5 ${meta.color}`}>{allureFromKmh(targetSpeed)}</p>
                         </div>
                       </div>
                     </>
