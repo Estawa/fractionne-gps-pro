@@ -2,11 +2,11 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Play, Pause, Square, Settings2, MapPin, MapPinOff,
   Zap, Wind, Timer as TimerIcon, ChevronRight, RotateCcw, Sliders,
-  BookOpen, Save, Trash2, ArrowLeft, Check
+  BookOpen, Save, Trash2, ArrowLeft, Check, ChevronUp, ChevronDown
 } from "lucide-react";
 import { storage } from "./storage.js";
 import { PRESETS } from "./presets.js";
-import { playApplause } from "./shared.jsx";
+import { playApplause, getOrder, setOrder, applyOrder } from "./shared.jsx";
 
 // ---------- Constantes & helpers ----------
 
@@ -185,12 +185,14 @@ function distanceToSeconds(distMeters, pctVma, vmaKmh) {
 // ---------- Composant principal ----------
 
 export default function FractionneGPS() {
-  const [screen, setScreen] = useState("config"); // config | run | library
+  const [screen, setScreen] = useState("config"); // config | run | library | presets | libraryDetail
 
   // --- Bibliothèque de séances ---
   const [library, setLibrary] = useState([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryError, setLibraryError] = useState(false);
+  const [libraryDetail, setLibraryDetail] = useState(null);
+  const pendingReplayRef = useRef(false);
 
   // --- Enregistrement de la séance terminée ---
   const [saveTitle, setSaveTitle] = useState("");
@@ -418,12 +420,24 @@ export default function FractionneGPS() {
           if (r?.value) items.push(JSON.parse(r.value));
         } catch (e) { /* entrée ignorée si illisible */ }
       }
-      items.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
-      setLibrary(items);
+      const order = await getOrder(storage, "simple-library-order");
+      const ordered = applyOrder(items, order);
+      setLibrary(ordered);
+      await setOrder(storage, "simple-library-order", ordered.map(i => i.id));
     } catch (e) {
       setLibraryError(true);
     }
     setLibraryLoading(false);
+  }
+
+  async function moveLibraryItem(id, direction) {
+    const idx = library.findIndex(s => s.id === id);
+    const swapIdx = idx + direction;
+    if (idx < 0 || swapIdx < 0 || swapIdx >= library.length) return;
+    const reordered = [...library];
+    [reordered[idx], reordered[swapIdx]] = [reordered[swapIdx], reordered[idx]];
+    setLibrary(reordered);
+    await setOrder(storage, "simple-library-order", reordered.map(i => i.id));
   }
 
   function openLibrary() {
@@ -431,7 +445,7 @@ export default function FractionneGPS() {
     loadLibrary();
   }
 
-  function loadSessionConfig(saved) {
+  function applySessionConfig(saved) {
     const c = saved.config || {};
     setVma(c.vma ?? 15);
     setEffortPct(c.effortPct ?? 100);
@@ -444,8 +458,30 @@ export default function FractionneGPS() {
     setWarmupSec(c.warmupSec ?? 0);
     setFinalRecupSec(c.finalRecupSec ?? 0);
     setStartLatencySec(c.startLatencySec ?? 8);
+  }
+
+  function loadSessionConfig(saved) {
+    applySessionConfig(saved);
     setScreen("config");
   }
+
+  function openLibraryDetail(saved) {
+    setLibraryDetail(saved);
+    setScreen("libraryDetail");
+  }
+
+  // Relance la séance sauvegardée directement, sans repasser par l'écran de configuration
+  function replaySavedSession(saved) {
+    applySessionConfig(saved);
+    pendingReplayRef.current = true;
+  }
+
+  useEffect(() => {
+    if (pendingReplayRef.current) {
+      pendingReplayRef.current = false;
+      startSession();
+    }
+  }, [cfg]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function loadPresetConfig(preset) {
     const c = preset.config || {};
@@ -634,6 +670,14 @@ export default function FractionneGPS() {
             <ArrowLeft size={14} /> Retour
           </button>
         )}
+        {screen === "libraryDetail" && (
+          <button
+            onClick={() => setScreen("library")}
+            className="flex items-center gap-1 text-xs text-slate-400 border border-slate-700 rounded-full px-3 py-1.5 hover:bg-slate-800"
+          >
+            <ArrowLeft size={14} /> Retour
+          </button>
+        )}
       </header>
 
       {screen === "presets" && (
@@ -685,42 +729,122 @@ export default function FractionneGPS() {
             {!libraryLoading && !libraryError && library.length === 0 && (
               <p className="text-sm text-slate-500 text-center py-6">Aucune séance enregistrée pour l'instant.</p>
             )}
-            {!libraryLoading && library.map(s => (
+            {!libraryLoading && library.map((s, idx) => (
             <div key={s.id} className="bg-slate-900 rounded-2xl border border-slate-800 p-4 space-y-2">
               <div className="flex items-start justify-between gap-2">
-                <div>
+                <button onClick={() => openLibraryDetail(s)} className="text-left flex-1">
                   <p className="font-semibold text-slate-100">{s.title}</p>
                   <p className="text-xs text-slate-500">{s.date}</p>
-                </div>
-                <button onClick={() => deleteSession(s.id)} className="text-slate-500 hover:text-rose-400">
-                  <Trash2 size={16} />
                 </button>
-              </div>
-              <p className="text-xs text-slate-400 font-mono">
-                VMA {s.config?.vma} km/h · {s.config?.effortPct}%/{s.config?.recupPct}% VMA · {s.config?.series}×{s.config?.reps} · {s.config?.workSec}-{s.config?.restSec}
-              </p>
-              {s.recap && (
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-300 pt-1 border-t border-slate-800">
-                  <span>Charge : <span className="font-mono font-semibold text-slate-100">{s.recap.sessionCharge?.toFixed(1)}</span></span>
-                  <span>Travail : <span className="font-mono font-semibold text-slate-100">{fmtDuration(s.recap.workTime || 0)}</span></span>
-                  {s.recap.primaryZone && (
-                    <span>Objectif : <span className="font-semibold text-slate-100">{s.recap.primaryZone.label}</span>
-                      {s.recap.secondaryZone && <span className="text-slate-500"> + {s.recap.secondaryZone.label}</span>}
-                    </span>
-                  )}
+                <div className="flex items-center gap-1">
+                  <button onClick={() => moveLibraryItem(s.id, -1)} disabled={idx === 0}
+                    className="text-slate-500 hover:text-slate-200 disabled:opacity-30">
+                    <ChevronUp size={16} />
+                  </button>
+                  <button onClick={() => moveLibraryItem(s.id, 1)} disabled={idx === library.length - 1}
+                    className="text-slate-500 hover:text-slate-200 disabled:opacity-30">
+                    <ChevronDown size={16} />
+                  </button>
+                  <button onClick={() => deleteSession(s.id)} className="text-slate-500 hover:text-rose-400 ml-1">
+                    <Trash2 size={16} />
+                  </button>
                 </div>
-              )}
-              {s.observation && (
-                <p className="text-sm text-slate-300 italic">"{s.observation}"</p>
-              )}
+              </div>
+              <button onClick={() => openLibraryDetail(s)} className="text-left w-full space-y-2">
+                <p className="text-xs text-slate-400 font-mono">
+                  VMA {s.config?.vma} km/h · {s.config?.effortPct}%/{s.config?.recupPct}% VMA · {s.config?.series}×{s.config?.reps} · {s.config?.workSec}-{s.config?.restSec}
+                </p>
+                {s.recap && (
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-300 pt-1 border-t border-slate-800">
+                    <span>Charge : <span className="font-mono font-semibold text-slate-100">{s.recap.sessionCharge?.toFixed(1)}</span></span>
+                    <span>Travail : <span className="font-mono font-semibold text-slate-100">{fmtDuration(s.recap.workTime || 0)}</span></span>
+                    {s.recap.primaryZone && (
+                      <span>Objectif : <span className="font-semibold text-slate-100">{s.recap.primaryZone.label}</span>
+                        {s.recap.secondaryZone && <span className="text-slate-500"> + {s.recap.secondaryZone.label}</span>}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {s.observation && (
+                  <p className="text-sm text-slate-300 italic">"{s.observation}"</p>
+                )}
+              </button>
               <button
-                onClick={() => loadSessionConfig(s)}
+                onClick={() => replaySavedSession(s)}
                 className="w-full mt-1 bg-slate-100 text-slate-950 text-sm font-semibold rounded-xl py-2 flex items-center justify-center gap-2"
               >
-                <RotateCcw size={14} /> Charger cette séance
+                <RotateCcw size={14} /> Refaire cette séance
               </button>
             </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {screen === "libraryDetail" && libraryDetail && (
+        <div className="w-full max-w-md space-y-4">
+          <div className="bg-slate-900 rounded-2xl border border-slate-800 p-5 space-y-4">
+            <h2 className="text-lg font-bold text-slate-100">{libraryDetail.title}</h2>
+            <p className="text-xs text-slate-500">{libraryDetail.date}</p>
+
+            <p className="text-xs text-slate-400 font-mono pt-2 border-t border-slate-800">
+              VMA {libraryDetail.config?.vma} km/h · {libraryDetail.config?.effortPct}%/{libraryDetail.config?.recupPct}% VMA · {libraryDetail.config?.series}×{libraryDetail.config?.reps} · {libraryDetail.config?.workSec}-{libraryDetail.config?.restSec}
+            </p>
+
+            {libraryDetail.recap && (
+              <>
+                <div className="space-y-2 pt-2 border-t border-slate-800">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Vitesses</p>
+                  <StatRow label="Vitesse maximale atteinte" value={`${(libraryDetail.recap.maxSpeed || 0).toFixed(1)} km/h · ${allureFromKmh(libraryDetail.recap.maxSpeed || 0)}`} />
+                  <StatRow label="Vitesse moy. de travail" value={`${(libraryDetail.recap.workAvgSpeed || 0).toFixed(1)} km/h · ${allureFromKmh(libraryDetail.recap.workAvgSpeed || 0)}`}
+                    sub={`${(libraryDetail.recap.workAvgPctVma || 0).toFixed(0)}% VMA`} />
+                </div>
+
+                <div className="space-y-2 pt-2 border-t border-slate-800">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Objectifs atteints</p>
+                  {libraryDetail.recap.primaryZone && (
+                    <StatRow label="Principal (travail)" value={libraryDetail.recap.primaryZone.label} sub={libraryDetail.recap.primaryZone.effect} />
+                  )}
+                  {libraryDetail.recap.secondaryZone && (
+                    <StatRow label="Secondaire (récup')" value={libraryDetail.recap.secondaryZone.label} sub={libraryDetail.recap.secondaryZone.effect} />
+                  )}
+                </div>
+
+                <div className="space-y-2 pt-2 border-t border-slate-800">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Charge</p>
+                  <StatRow label="Indicateur de charge" value={(libraryDetail.recap.sessionCharge || 0).toFixed(1)} sub="1 min à 100% VMA = charge de 1" />
+                </div>
+
+                <div className="space-y-2 pt-2 border-t border-slate-800">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Temps &amp; distances</p>
+                  <StatRow label="Temps total" value={fmtDuration(libraryDetail.recap.totalSessionTime || 0)} />
+                  <StatRow label="Temps de travail" value={fmtDuration(libraryDetail.recap.workTime || 0)} />
+                  <StatRow label="Distance totale" value={fmtDistance(libraryDetail.recap.totalDistanceAll || 0)} />
+                </div>
+              </>
+            )}
+
+            {libraryDetail.observation && (
+              <div className="pt-2 border-t border-slate-800">
+                <p className="text-xs uppercase tracking-wide text-slate-500 mb-1">Observation</p>
+                <p className="text-sm italic text-slate-300">"{libraryDetail.observation}"</p>
+              </div>
+            )}
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => replaySavedSession(libraryDetail)}
+                className="flex-1 bg-orange-500 hover:bg-orange-400 text-slate-950 font-semibold rounded-xl py-3 flex items-center justify-center gap-2"
+              >
+                <RotateCcw size={18} /> Refaire cette séance
+              </button>
+              <button
+                onClick={() => loadSessionConfig(libraryDetail)}
+                className="bg-slate-800 text-slate-300 rounded-xl px-4 flex items-center justify-center text-sm"
+              >
+                Modifier
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -865,11 +989,13 @@ export default function FractionneGPS() {
                           <p className="text-2xl font-mono font-bold">{currentSpeed.toFixed(1)}</p>
                           <p className="text-xs text-slate-500">km/h actuelle</p>
                           <p className="text-sm font-mono text-slate-400 mt-0.5">{allureFromKmh(currentSpeed)}</p>
+                          <p className="text-sm font-mono text-slate-400 mt-0.5">{vma > 0 ? ((currentSpeed / vma) * 100).toFixed(0) : 0}% VMA</p>
                         </div>
                         <div>
                           <p className={`text-2xl font-mono font-bold ${meta.color}`}>{targetSpeed?.toFixed(1)}</p>
                           <p className="text-xs text-slate-500">km/h cible</p>
                           <p className={`text-sm font-mono mt-0.5 ${meta.color}`}>{allureFromKmh(targetSpeed)}</p>
+                          <p className={`text-sm font-mono mt-0.5 ${meta.color}`}>{run.phase === "effort" ? effortPct : recupPct}% VMA</p>
                         </div>
                       </div>
                     </>
@@ -882,6 +1008,20 @@ export default function FractionneGPS() {
                     <input type="range" min="0" max="25" step="0.1" value={simSpeed}
                       onChange={e => setSimSpeed(parseFloat(e.target.value))}
                       className="w-full mt-3 accent-violet-500" />
+                  )}
+                </div>
+              )}
+
+              {(run.phase === "warmup" || run.phase === "finalRecup") && (
+                <div className="w-full bg-slate-900 rounded-2xl border border-slate-800 p-6 flex flex-col items-center">
+                  <span className="text-xs uppercase tracking-widest text-slate-500">%VMA instantané</span>
+                  <span className={`text-5xl font-mono font-bold mt-2 ${meta.color}`}>
+                    {vma > 0 ? (((simMode ? simSpeed : liveSpeed) / vma) * 100).toFixed(0) : 0}%
+                  </span>
+                  {simMode && (
+                    <input type="range" min="0" max="25" step="0.1" value={simSpeed}
+                      onChange={e => setSimSpeed(parseFloat(e.target.value))}
+                      className="w-full mt-4 accent-violet-500" />
                   )}
                 </div>
               )}

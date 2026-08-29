@@ -214,3 +214,35 @@ export function StatRow({ label, value, sub }) {
     </div>
   );
 }
+
+// --- Ordre personnalisé des bibliothèques (mode simple et Full Power) ---
+// Un tableau d'ids stocké à part, appliqué par-dessus la liste chargée.
+
+export async function getOrder(storageObj, key) {
+  try {
+    const r = await storageObj.get(key);
+    if (!r?.value) return [];
+    return JSON.parse(r.value);
+  } catch {
+    return [];
+  }
+}
+
+export async function setOrder(storageObj, key, ids) {
+  try {
+    return await storageObj.set(key, JSON.stringify(ids));
+  } catch {
+    return null;
+  }
+}
+
+// Applique un ordre d'ids sur une liste d'items ; les items absents de l'ordre
+// (nouveaux) sont ajoutés à la fin, triés par date d'enregistrement décroissante.
+export function applyOrder(items, order) {
+  const byId = Object.fromEntries(items.map(i => [i.id, i]));
+  const ordered = order.filter(id => byId[id]).map(id => byId[id]);
+  const orderedIds = new Set(ordered.map(i => i.id));
+  const missing = items.filter(i => !orderedIds.has(i.id));
+  missing.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+  return [...ordered, ...missing];
+}
