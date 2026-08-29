@@ -5,6 +5,7 @@ import {
   BookOpen, Save, Trash2, ArrowLeft, Check
 } from "lucide-react";
 import { storage } from "./storage.js";
+import { PRESETS } from "./presets.js";
 
 // ---------- Constantes & helpers ----------
 
@@ -170,6 +171,14 @@ function segmentCharge(distMeters, timeSec, vmaKmh) {
   const avgSpeed = (distMeters / timeSec) * 3.6;
   const avgPct = (avgSpeed / vmaKmh) * 100;
   return (avgPct / 100) * (timeSec / 60);
+}
+
+// Convertit une distance cible (m) à une allure %VMA donnée en durée (s), selon la VMA de l'utilisateur
+function distanceToSeconds(distMeters, pctVma, vmaKmh) {
+  const speedKmh = vmaKmh * (pctVma / 100);
+  if (speedKmh <= 0) return 0;
+  const speedMs = (speedKmh * 1000) / 3600;
+  return distMeters / speedMs;
 }
 
 // ---------- Composant principal ----------
@@ -433,6 +442,32 @@ export default function FractionneGPS() {
     setScreen("config");
   }
 
+  function loadPresetConfig(preset) {
+    const c = preset.config || {};
+    setEffortPct(c.effortPct ?? 100);
+    setRecupPct(c.recupPct ?? 50);
+    // Séances à distance fixe (ex. fartlek) : la durée de chaque phase est calculée
+    // à partir de la VMA déjà saisie, pour que la séance s'adapte au niveau de chacun.
+    if (c.workDistM != null) {
+      setWorkSec(Math.round(distanceToSeconds(c.workDistM, c.effortPct ?? 100, vma)));
+    } else {
+      setWorkSec(c.workSec ?? 30);
+    }
+    if (c.restDistM != null) {
+      setRestSec(Math.round(distanceToSeconds(c.restDistM, c.recupPct ?? 50, vma)));
+    } else {
+      setRestSec(c.restSec ?? 30);
+    }
+    setReps(c.reps ?? 9);
+    setSeries(c.series ?? 3);
+    setRestSeriesSec(c.restSeriesSec ?? 180);
+    setWarmupSec(c.warmupSec ?? 0);
+    setFinalRecupSec(c.finalRecupSec ?? 0);
+    setStartLatencySec(c.startLatencySec ?? 8);
+    // La VMA n'est pas modifiée : la séance s'adapte au niveau déjà renseigné.
+    setScreen("config");
+  }
+
   async function deleteSession(id) {
     try { await storage.delete(id); } catch (e) { /* ignoré */ }
     loadLibrary();
@@ -589,17 +624,49 @@ export default function FractionneGPS() {
       </header>
 
       {screen === "library" && (
-        <div className="w-full max-w-md space-y-3">
-          {libraryLoading && (
-            <p className="text-sm text-slate-500 text-center py-6">Chargement de la bibliothèque…</p>
-          )}
-          {!libraryLoading && libraryError && (
-            <p className="text-sm text-rose-400 text-center py-6">Impossible de charger la bibliothèque.</p>
-          )}
-          {!libraryLoading && !libraryError && library.length === 0 && (
-            <p className="text-sm text-slate-500 text-center py-6">Aucune séance enregistrée pour l'instant.</p>
-          )}
-          {!libraryLoading && library.map(s => (
+        <div className="w-full max-w-md space-y-6">
+          <div className="space-y-3">
+            <p className="text-xs uppercase tracking-wide text-slate-500 flex items-center gap-1.5">
+              <Zap size={14} className="text-orange-400" /> Séances prêtes à l'emploi
+            </p>
+            {PRESETS.map(p => (
+              <div key={p.id} className="bg-slate-900 rounded-2xl border border-slate-800 p-4 space-y-2">
+                <p className="font-semibold text-slate-100">{p.title}</p>
+                <p className="text-sm text-slate-400">{p.description}</p>
+                <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-300 font-mono pt-1 border-t border-slate-800">
+                  <div><dt className="inline text-slate-500">Effort : </dt><dd className="inline">{p.config.effortPct}% VMA{p.config.workDistM != null ? ` · ${p.config.workDistM} m` : ` · ${p.config.workSec} s`}</dd></div>
+                  <div><dt className="inline text-slate-500">Récup : </dt><dd className="inline">{p.config.recupPct}% VMA{p.config.restDistM != null ? ` · ${p.config.restDistM} m` : ` · ${p.config.restSec} s`}</dd></div>
+                  <div><dt className="inline text-slate-500">Répétitions : </dt><dd className="inline">{p.config.reps}</dd></div>
+                  <div><dt className="inline text-slate-500">Séries : </dt><dd className="inline">{p.config.series}</dd></div>
+                  <div><dt className="inline text-slate-500">Pause entre séries : </dt><dd className="inline">{p.config.restSeriesSec > 0 ? `${p.config.restSeriesSec} s` : "aucune"}</dd></div>
+                  <div><dt className="inline text-slate-500">Latence départ : </dt><dd className="inline">{p.config.startLatencySec > 0 ? `${p.config.startLatencySec} s` : "aucune"}</dd></div>
+                  <div><dt className="inline text-slate-500">Échauffement : </dt><dd className="inline">{p.config.warmupSec > 0 ? `${p.config.warmupSec} s` : "aucun"}</dd></div>
+                  <div><dt className="inline text-slate-500">Récup finale : </dt><dd className="inline">{p.config.finalRecupSec > 0 ? `${p.config.finalRecupSec} s` : "aucune"}</dd></div>
+                </dl>
+                <button
+                  onClick={() => loadPresetConfig(p)}
+                  className="w-full mt-1 bg-orange-500 text-slate-950 text-sm font-semibold rounded-xl py-2 flex items-center justify-center gap-2"
+                >
+                  <RotateCcw size={14} /> Charger cette séance
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-3">
+            <p className="text-xs uppercase tracking-wide text-slate-500 flex items-center gap-1.5">
+              <BookOpen size={14} className="text-sky-400" /> Mes séances
+            </p>
+            {libraryLoading && (
+              <p className="text-sm text-slate-500 text-center py-6">Chargement de la bibliothèque…</p>
+            )}
+            {!libraryLoading && libraryError && (
+              <p className="text-sm text-rose-400 text-center py-6">Impossible de charger la bibliothèque.</p>
+            )}
+            {!libraryLoading && !libraryError && library.length === 0 && (
+              <p className="text-sm text-slate-500 text-center py-6">Aucune séance enregistrée pour l'instant.</p>
+            )}
+            {!libraryLoading && library.map(s => (
             <div key={s.id} className="bg-slate-900 rounded-2xl border border-slate-800 p-4 space-y-2">
               <div className="flex items-start justify-between gap-2">
                 <div>
@@ -634,7 +701,8 @@ export default function FractionneGPS() {
                 <RotateCcw size={14} /> Charger cette séance
               </button>
             </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
 
