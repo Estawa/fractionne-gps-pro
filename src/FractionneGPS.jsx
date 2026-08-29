@@ -621,37 +621,51 @@ export default function FractionneGPS() {
             <ArrowLeft size={14} /> Retour
           </button>
         )}
+        {screen === "presets" && (
+          <button
+            onClick={() => setScreen("library")}
+            className="flex items-center gap-1 text-xs text-slate-400 border border-slate-700 rounded-full px-3 py-1.5 hover:bg-slate-800"
+          >
+            <ArrowLeft size={14} /> Retour
+          </button>
+        )}
       </header>
+
+      {screen === "presets" && (
+        <div className="w-full max-w-md space-y-3">
+          {PRESETS.map(p => (
+            <div key={p.id} className="bg-slate-900 rounded-2xl border border-slate-800 p-4 space-y-2">
+              <p className="font-semibold text-slate-100">{p.title}</p>
+              <p className="text-sm text-slate-400">{p.description}</p>
+              <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-300 font-mono pt-1 border-t border-slate-800">
+                <div><dt className="inline text-slate-500">Effort : </dt><dd className="inline">{p.config.effortPct}% VMA{p.config.workDistM != null ? ` · ${p.config.workDistM} m` : ` · ${p.config.workSec} s`}</dd></div>
+                <div><dt className="inline text-slate-500">Récup : </dt><dd className="inline">{p.config.recupPct}% VMA{p.config.restDistM != null ? ` · ${p.config.restDistM} m` : ` · ${p.config.restSec} s`}</dd></div>
+                <div><dt className="inline text-slate-500">Répétitions : </dt><dd className="inline">{p.config.reps}</dd></div>
+                <div><dt className="inline text-slate-500">Séries : </dt><dd className="inline">{p.config.series}</dd></div>
+                <div><dt className="inline text-slate-500">Pause entre séries : </dt><dd className="inline">{p.config.restSeriesSec > 0 ? `${p.config.restSeriesSec} s` : "aucune"}</dd></div>
+                <div><dt className="inline text-slate-500">Latence départ : </dt><dd className="inline">{p.config.startLatencySec > 0 ? `${p.config.startLatencySec} s` : "aucune"}</dd></div>
+                <div><dt className="inline text-slate-500">Échauffement : </dt><dd className="inline">{p.config.warmupSec > 0 ? `${p.config.warmupSec} s` : "aucun"}</dd></div>
+                <div><dt className="inline text-slate-500">Récup finale : </dt><dd className="inline">{p.config.finalRecupSec > 0 ? `${p.config.finalRecupSec} s` : "aucune"}</dd></div>
+              </dl>
+              <button
+                onClick={() => loadPresetConfig(p)}
+                className="w-full mt-1 bg-orange-500 text-slate-950 text-sm font-semibold rounded-xl py-2 flex items-center justify-center gap-2"
+              >
+                <RotateCcw size={14} /> Charger cette séance
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {screen === "library" && (
         <div className="w-full max-w-md space-y-6">
-          <div className="space-y-3">
-            <p className="text-xs uppercase tracking-wide text-slate-500 flex items-center gap-1.5">
-              <Zap size={14} className="text-orange-400" /> Séances prêtes à l'emploi
-            </p>
-            {PRESETS.map(p => (
-              <div key={p.id} className="bg-slate-900 rounded-2xl border border-slate-800 p-4 space-y-2">
-                <p className="font-semibold text-slate-100">{p.title}</p>
-                <p className="text-sm text-slate-400">{p.description}</p>
-                <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-300 font-mono pt-1 border-t border-slate-800">
-                  <div><dt className="inline text-slate-500">Effort : </dt><dd className="inline">{p.config.effortPct}% VMA{p.config.workDistM != null ? ` · ${p.config.workDistM} m` : ` · ${p.config.workSec} s`}</dd></div>
-                  <div><dt className="inline text-slate-500">Récup : </dt><dd className="inline">{p.config.recupPct}% VMA{p.config.restDistM != null ? ` · ${p.config.restDistM} m` : ` · ${p.config.restSec} s`}</dd></div>
-                  <div><dt className="inline text-slate-500">Répétitions : </dt><dd className="inline">{p.config.reps}</dd></div>
-                  <div><dt className="inline text-slate-500">Séries : </dt><dd className="inline">{p.config.series}</dd></div>
-                  <div><dt className="inline text-slate-500">Pause entre séries : </dt><dd className="inline">{p.config.restSeriesSec > 0 ? `${p.config.restSeriesSec} s` : "aucune"}</dd></div>
-                  <div><dt className="inline text-slate-500">Latence départ : </dt><dd className="inline">{p.config.startLatencySec > 0 ? `${p.config.startLatencySec} s` : "aucune"}</dd></div>
-                  <div><dt className="inline text-slate-500">Échauffement : </dt><dd className="inline">{p.config.warmupSec > 0 ? `${p.config.warmupSec} s` : "aucun"}</dd></div>
-                  <div><dt className="inline text-slate-500">Récup finale : </dt><dd className="inline">{p.config.finalRecupSec > 0 ? `${p.config.finalRecupSec} s` : "aucune"}</dd></div>
-                </dl>
-                <button
-                  onClick={() => loadPresetConfig(p)}
-                  className="w-full mt-1 bg-orange-500 text-slate-950 text-sm font-semibold rounded-xl py-2 flex items-center justify-center gap-2"
-                >
-                  <RotateCcw size={14} /> Charger cette séance
-                </button>
-              </div>
-            ))}
-          </div>
+          <button
+            onClick={() => setScreen("presets")}
+            className="w-full flex items-center justify-center gap-2 bg-orange-500/10 border border-orange-500/40 text-orange-400 text-sm font-semibold rounded-xl py-2.5"
+          >
+            <Zap size={16} /> Presets
+          </button>
 
           <div className="space-y-3">
             <p className="text-xs uppercase tracking-wide text-slate-500 flex items-center gap-1.5">
