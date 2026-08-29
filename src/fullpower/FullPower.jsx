@@ -49,6 +49,7 @@ export default function FullPower({ runnerName, onToast }) {
   const [globalRepeatCount, setGlobalRepeatCount] = useState(1);
   const [warmupSec, setWarmupSec] = useState(300);
   const [finalRecupSec, setFinalRecupSec] = useState(180);
+  const [startLatencySec, setStartLatencySec] = useState(4);
 
   // --- Config Hazardous ---
   const [hzWarmupSec, setHzWarmupSec] = useState(300);
@@ -85,6 +86,7 @@ export default function FullPower({ runnerName, onToast }) {
   const qIndexRef = useRef(0);
   const statusRef = useRef(status);
   const liveSpeedRef = useRef(0);
+  const secondsLeftRef = useRef(0);
   const recupTextFiredRef = useRef(false);
   const raceStartFiredRef = useRef(false);
 
@@ -106,10 +108,20 @@ export default function FullPower({ runnerName, onToast }) {
   useEffect(() => { queueRef.current = queue; }, [queue]);
   useEffect(() => { qIndexRef.current = qIndex; }, [qIndex]);
   useEffect(() => { statusRef.current = status; }, [status]);
-  useEffect(() => { liveSpeedRef.current = simMode ? simSpeed : liveSpeed; }, [simMode, simSpeed, liveSpeed]);
+  useEffect(() => { secondsLeftRef.current = secondsLeft; }, [secondsLeft]);
+  // Pendant l'échauffement et la récup' finale, on ignore le mode simulation :
+  // seule la vitesse GPS réelle compte, la simulation n'y a plus cours.
+  useEffect(() => {
+    const cur = queue[qIndex];
+    const isWarmupOrFinal = cur && (cur.kind === "warmup" || cur.kind === "finalRecup");
+    liveSpeedRef.current = (simMode && !isWarmupOrFinal) ? simSpeed : liveSpeed;
+  }, [simMode, simSpeed, liveSpeed, queue, qIndex]);
 
   const current = queue[qIndex] || { kind: "finished", seconds: 0 };
   const targetSpeed = current.pct ? vma * (current.pct / 100) : 0;
+  const inLatency = current.kind === "work" && current.latencySec > 0
+    && (current.seconds - secondsLeft) < current.latencySec;
+  const latencyRemaining = inLatency ? Math.ceil(current.latencySec - (current.seconds - secondsLeft)) : 0;
 
   function accumulate(kind, speedKmh) {
     const distInc = speedKmh / 3.6;
@@ -172,8 +184,12 @@ export default function FullPower({ runnerName, onToast }) {
   }, [qIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- GPS ---
+  // Reste actif pendant l'échauffement et la récup' finale même si la simulation
+  // est activée pour le reste de la séance.
   useEffect(() => {
-    if (screen !== "run" || simMode || status !== "running") {
+    const cur = queue[qIndex];
+    const isWarmupOrFinal = cur && (cur.kind === "warmup" || cur.kind === "finalRecup");
+    if (screen !== "run" || (simMode && !isWarmupOrFinal) || status !== "running") {
       if (watchIdRef.current !== null && navigator.geolocation) {
         navigator.geolocation.clearWatch(watchIdRef.current);
         watchIdRef.current = null;
@@ -196,12 +212,23 @@ export default function FullPower({ runnerName, onToast }) {
         watchIdRef.current = null;
       }
     };
-  }, [screen, simMode, status]);
+  }, [screen, simMode, status, queue, qIndex]);
 
   // --- Bips de régulation (seulement en work/recup, jamais pendant échauffement/pauses) ---
   const beepLoop = useCallback(() => {
     const cur = queueRef.current[qIndexRef.current];
     if (!cur || statusRef.current !== "running" || (cur.kind !== "work" && cur.kind !== "recup")) return;
+
+    // Latence de départ (phase d'accélération, départ arrêté) — uniquement en
+    // configuration manuelle, sur la 1ère répétition de travail de chaque série.
+    if (cur.kind === "work" && cur.latencySec > 0) {
+      const elapsed = cur.seconds - secondsLeftRef.current;
+      if (elapsed < cur.latencySec) {
+        beepTimeoutRef.current = setTimeout(beepLoop, 250);
+        return;
+      }
+    }
+
     const ctx = ensureAudioCtx();
     const speed = liveSpeedRef.current;
     const target = vma * ((cur.pct || 0) / 100);
@@ -284,7 +311,7 @@ export default function FullPower({ runnerName, onToast }) {
     if (activeTypes.length === 0 || validSeries.length === 0) return;
     const q = buildManualQueue({
       repTypes: activeTypes, seriesList: validSeries,
-      globalRepeatCount, warmupSec, finalRecupSec,
+      globalRepeatCount, warmupSec, finalRecupSec, startLatencySec,
     });
     resetAcc();
     setQueue(q);
@@ -347,7 +374,7 @@ export default function FullPower({ runnerName, onToast }) {
         queue, // séquence exacte jouée, pour pouvoir refaire la séance à l'identique
         config: isHazardous
           ? { warmupSec: hzWarmupSec, workTotalSec: hzWorkTotalSec, finalRecupSec: hzFinalRecupSec }
-          : { repTypes: repTypes.filter(rt => rt.enabled), seriesList, globalRepeatCount, warmupSec, finalRecupSec },
+          : { repTypes: repTypes.filter(rt => rt.enabled), seriesList, globalRepeatCount, warmupSec, finalRecupSec, startLatencySec },
         totals: {
           workDist: acc.current.work.dist, workTime: acc.current.work.time,
           recupDist: acc.current.recup.dist, recupTime: acc.current.recup.time,
@@ -567,6 +594,15 @@ export default function FullPower({ runnerName, onToast }) {
               <div className="bg-slate-900/70 rounded-2xl p-4 border border-fuchsia-500/20 grid grid-cols-2 gap-3">
                 <MiniField label="Échauffement (s)" value={warmupSec} onChange={setWarmupSec} />
                 <MiniField label="Récup' finale (s)" value={finalRecupSec} onChange={setFinalRecupSec} />
+                <MiniField
+                  label="Latence avant régulation (1ère rép. de chaque série, s)"
+                  value={startLatencySec}
+                  onChange={setStartLatencySec}
+                  full
+                />
+                <p className="text-xs text-slate-500 col-span-2">
+                  La latence correspond à la phase d'accélération au départ arrêté : pendant ce délai, choisi par toi, aucun bip de régulation ne retentit. Elle s'applique sur la 1ère répétition de chaque série.
+                </p>
               </div>
 
               <SimToggle simMode={simMode} setSimMode={setSimMode} />
@@ -740,7 +776,15 @@ export default function FullPower({ runnerName, onToast }) {
             </div>
           )}
 
-          {current.kind !== "finished" && (current.kind === "work" || current.kind === "recup") && (
+          {current.kind !== "finished" && (current.kind === "work" || current.kind === "recup") && inLatency ? (
+            <div className="w-full bg-slate-900/70 rounded-2xl border border-fuchsia-500/20 p-4 flex flex-col items-center">
+              <div className="py-6 text-center">
+                <p className="text-sm font-semibold text-amber-400">Phase d'accélération</p>
+                <p className="text-4xl font-mono font-bold mt-1">{latencyRemaining}s</p>
+                <p className="text-xs text-slate-500 mt-1">Bips de régulation avant {latencyRemaining}s</p>
+              </div>
+            </div>
+          ) : current.kind !== "finished" && (current.kind === "work" || current.kind === "recup") && (
             <div className="w-full bg-slate-900/70 rounded-2xl border border-fuchsia-500/20 p-4 flex flex-col items-center">
               <NeedleGauge currentSpeed={simMode ? simSpeed : liveSpeed} targetSpeed={targetSpeed} />
               <div className="flex justify-between w-full mt-1 text-center">
@@ -775,13 +819,8 @@ export default function FullPower({ runnerName, onToast }) {
             <div className="w-full bg-slate-900/70 rounded-2xl border border-fuchsia-500/20 p-6 flex flex-col items-center">
               <span className="text-xs uppercase tracking-widest text-slate-500">%VMA instantané</span>
               <span className="text-5xl font-mono font-bold mt-2 text-fuchsia-300">
-                {vma > 0 ? (((simMode ? simSpeed : liveSpeed) / vma) * 100).toFixed(0) : 0}%
+                {vma > 0 ? ((liveSpeed / vma) * 100).toFixed(0) : 0}%
               </span>
-              {simMode && (
-                <input type="range" min="0" max="25" step="0.1" value={simSpeed}
-                  onChange={e => setSimSpeed(parseFloat(e.target.value))}
-                  className="w-full mt-4 accent-fuchsia-500" />
-              )}
             </div>
           )}
 

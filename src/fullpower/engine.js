@@ -10,11 +10,17 @@
 // seriesList: [{ id, blocks: [{ repTypeId, count }], repeatCount }, ...]
 // globalRepeatCount: nombre de fois où l'on boucle l'ensemble des séries
 
-export function buildManualQueue({ repTypes, seriesList, globalRepeatCount, warmupSec, finalRecupSec }) {
+export function buildManualQueue({ repTypes, seriesList, globalRepeatCount, warmupSec, finalRecupSec, startLatencySec }) {
   const queue = [];
   const byId = Object.fromEntries(repTypes.map(rt => [rt.id, rt]));
 
   if (warmupSec > 0) queue.push({ kind: "warmup", seconds: warmupSec });
+
+  // La latence de départ (phase d'accélération, départ arrêté) s'applique uniquement
+  // sur la toute première répétition de travail de chaque nouvelle série — c'est-à-dire
+  // le premier bloc "work" rencontré depuis le début (ou depuis la dernière pause
+  // entre séries "restSeries").
+  let pendingSeriesStart = true;
 
   const totalLoops = Math.max(1, globalRepeatCount || 1);
   for (let loop = 0; loop < totalLoops; loop++) {
@@ -25,7 +31,12 @@ export function buildManualQueue({ repTypes, seriesList, globalRepeatCount, warm
           const rt = byId[block.repTypeId];
           if (!rt) return;
           for (let i = 0; i < Math.max(1, block.count || 1); i++) {
-            queue.push({ kind: "work", pct: rt.workPct, seconds: rt.workSec, repTypeId: rt.id, seriesLabel: serie.label || `Série ${sIdx + 1}` });
+            const workPhase = { kind: "work", pct: rt.workPct, seconds: rt.workSec, repTypeId: rt.id, seriesLabel: serie.label || `Série ${sIdx + 1}` };
+            if (pendingSeriesStart && startLatencySec > 0) {
+              workPhase.latencySec = startLatencySec;
+            }
+            pendingSeriesStart = false;
+            queue.push(workPhase);
             queue.push({ kind: "recup", pct: rt.recupPct, seconds: rt.recupSec, repTypeId: rt.id, seriesLabel: serie.label || `Série ${sIdx + 1}` });
           }
         });
@@ -34,6 +45,7 @@ export function buildManualQueue({ repTypes, seriesList, globalRepeatCount, warm
       const isVeryLast = loop === totalLoops - 1 && sIdx === seriesList.length - 1;
       if (!isVeryLast && serie.restSeriesSec > 0) {
         queue.push({ kind: "restSeries", seconds: serie.restSeriesSec });
+        pendingSeriesStart = true;
       }
     });
   }
