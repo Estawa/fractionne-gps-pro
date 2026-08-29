@@ -6,7 +6,7 @@ import {
 import { storage } from "../storage.js";
 import {
   fmtDistance, fmtDuration, fmtTime, allureFromKmh,
-  playGong, playBeep, playCountdownBeep,
+  playGong, playBeep, playCountdownBeep, playGunshot, playApplause,
   TOLERANCE_RATIO, SILENCE_CHECK_MS, speedRatio, beepIntervalMs, beepFrequency,
   ZONES, classifyZone, segmentCharge, StatRow,
 } from "../shared.jsx";
@@ -224,6 +224,10 @@ export default function FullPower({ runnerName, onToast }) {
     if (prev !== null && prev !== current.kind) {
       const boundary = prev === "restSeries" || current.kind === "restSeries";
       playGong(ensureAudioCtx(), boundary ? 2 : 1);
+      if (current.kind === "finished") {
+        const ctx = ensureAudioCtx();
+        setTimeout(() => playApplause(ctx, 3), 400);
+      }
     }
     prevKindRef.current = current.kind;
   }, [screen, current.kind, ensureAudioCtx]);
@@ -304,6 +308,7 @@ export default function FullPower({ runnerName, onToast }) {
   useEffect(() => {
     if (rocketCount === null) return;
     if (rocketCount === 0) {
+      playGunshot(ensureAudioCtx());
       const t = setTimeout(() => {
         setRocketCount(null);
         setSecondsLeft(queueRef.current[0]?.seconds || 0);
@@ -612,18 +617,20 @@ export default function FullPower({ runnerName, onToast }) {
           {current.kind !== "finished" && (current.kind === "work" || current.kind === "recup") && (
             <div className="w-full bg-slate-900/70 rounded-2xl border border-fuchsia-500/20 p-4 flex flex-col items-center">
               <NeedleGauge currentSpeed={simMode ? simSpeed : liveSpeed} targetSpeed={targetSpeed} />
-              {!isHazardous && (
-                <div className="flex justify-between w-full mt-1 text-center">
-                  <div>
-                    <p className="text-2xl font-mono font-bold">{(simMode ? simSpeed : liveSpeed).toFixed(1)}</p>
-                    <p className="text-xs text-slate-500">km/h actuelle</p>
-                  </div>
+              <div className="flex justify-between w-full mt-1 text-center">
+                <div>
+                  <p className="text-2xl font-mono font-bold">{(simMode ? simSpeed : liveSpeed).toFixed(1)}</p>
+                  <p className="text-xs text-slate-500">km/h actuelle</p>
+                  <p className="text-sm font-mono text-slate-400 mt-0.5">{allureFromKmh(simMode ? simSpeed : liveSpeed)}</p>
+                </div>
+                {!isHazardous && (
                   <div>
                     <p className="text-2xl font-mono font-bold text-fuchsia-300">{targetSpeed.toFixed(1)}</p>
                     <p className="text-xs text-slate-500">km/h cible</p>
+                    <p className="text-sm font-mono text-fuchsia-300 mt-0.5">{allureFromKmh(targetSpeed)}</p>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
               <p className="text-xs text-slate-500 mt-2 flex items-center gap-1">
                 {simMode ? <Sliders size={12} /> : gpsStatus === "active" ? <MapPin size={12} className="text-emerald-400" /> : <MapPinOff size={12} className="text-rose-400" />}
                 {simMode ? "Vitesse simulée" : gpsStatus === "active" ? "GPS actif" : "GPS indisponible"}
