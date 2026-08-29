@@ -211,7 +211,7 @@ export default function FractionneGPS() {
   const [restSeriesSec, setRestSeriesSec] = useState(180);
   const [warmupSec, setWarmupSec] = useState(0);
   const [finalRecupSec, setFinalRecupSec] = useState(0);
-  const [startLatencySec, setStartLatencySec] = useState(8);
+  const [startLatencySec, setStartLatencySec] = useState(4);
 
   const cfg = useMemo(() => ({
     vma, effortPct, recupPct, workSec, restSec, reps, series, restSeriesSec,
@@ -287,7 +287,12 @@ export default function FractionneGPS() {
 
   useEffect(() => { runRef.current = run; }, [run]);
   useEffect(() => { statusRef.current = status; }, [status]);
-  useEffect(() => { liveSpeedRef.current = simMode ? simSpeed : liveSpeed; }, [simMode, simSpeed, liveSpeed]);
+  // Pendant l'échauffement et la récup' finale, on ignore le mode simulation :
+  // seule la vitesse GPS réelle compte, la simulation n'y a plus cours.
+  useEffect(() => {
+    const isWarmupOrFinal = run.phase === "warmup" || run.phase === "finalRecup";
+    liveSpeedRef.current = (simMode && !isWarmupOrFinal) ? simSpeed : liveSpeed;
+  }, [simMode, simSpeed, liveSpeed, run.phase]);
   useEffect(() => {
     targetSpeedRef.current = run.phase === "effort" ? effortSpeed : run.phase === "recup" ? recupSpeed : 0;
   }, [run.phase, effortSpeed, recupSpeed]);
@@ -315,8 +320,11 @@ export default function FractionneGPS() {
   useEffect(() => { setDistance(0); }, [run.phase, run.rep, run.series]);
 
   // --- GPS ---
+  // Le GPS reste actif pendant l'échauffement et la récup' finale même si le mode
+  // simulation est activé pour le reste de la séance : la simulation n'y a plus cours.
   useEffect(() => {
-    if (screen !== "run" || simMode || status !== "running") {
+    const isWarmupOrFinal = run.phase === "warmup" || run.phase === "finalRecup";
+    if (screen !== "run" || (simMode && !isWarmupOrFinal) || status !== "running") {
       if (watchIdRef.current !== null && navigator.geolocation) {
         navigator.geolocation.clearWatch(watchIdRef.current);
         watchIdRef.current = null;
@@ -344,7 +352,7 @@ export default function FractionneGPS() {
         watchIdRef.current = null;
       }
     };
-  }, [screen, simMode, status]);
+  }, [screen, simMode, status, run.phase]);
 
   // --- Boucle de bips ---
   const beepLoop = useCallback(() => {
@@ -457,7 +465,7 @@ export default function FractionneGPS() {
     setRestSeriesSec(c.restSeriesSec ?? 180);
     setWarmupSec(c.warmupSec ?? 0);
     setFinalRecupSec(c.finalRecupSec ?? 0);
-    setStartLatencySec(c.startLatencySec ?? 8);
+    setStartLatencySec(c.startLatencySec ?? 4);
   }
 
   function loadSessionConfig(saved) {
@@ -504,7 +512,7 @@ export default function FractionneGPS() {
     setRestSeriesSec(c.restSeriesSec ?? 180);
     setWarmupSec(c.warmupSec ?? 0);
     setFinalRecupSec(c.finalRecupSec ?? 0);
-    setStartLatencySec(c.startLatencySec ?? 8);
+    setStartLatencySec(c.startLatencySec ?? 4);
     // La VMA n'est pas modifiée : la séance s'adapte au niveau déjà renseigné.
     setScreen("config");
   }
@@ -1016,13 +1024,8 @@ export default function FractionneGPS() {
                 <div className="w-full bg-slate-900 rounded-2xl border border-slate-800 p-6 flex flex-col items-center">
                   <span className="text-xs uppercase tracking-widest text-slate-500">%VMA instantané</span>
                   <span className={`text-5xl font-mono font-bold mt-2 ${meta.color}`}>
-                    {vma > 0 ? (((simMode ? simSpeed : liveSpeed) / vma) * 100).toFixed(0) : 0}%
+                    {vma > 0 ? ((liveSpeed / vma) * 100).toFixed(0) : 0}%
                   </span>
-                  {simMode && (
-                    <input type="range" min="0" max="25" step="0.1" value={simSpeed}
-                      onChange={e => setSimSpeed(parseFloat(e.target.value))}
-                      className="w-full mt-4 accent-violet-500" />
-                  )}
                 </div>
               )}
 
