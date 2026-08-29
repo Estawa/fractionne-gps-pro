@@ -894,6 +894,11 @@ export default function FractionneGPS() {
                   <span className={`text-5xl font-mono font-bold mt-2 ${meta.color}`}>
                     {vma > 0 ? (((simMode ? simSpeed : liveSpeed) / vma) * 100).toFixed(0) : 0}%
                   </span>
+                  {simMode && (
+                    <input type="range" min="0" max="25" step="0.1" value={simSpeed}
+                      onChange={e => setSimSpeed(parseFloat(e.target.value))}
+                      className="w-full mt-4 accent-violet-500" />
+                  )}
                 </div>
               )}
 
