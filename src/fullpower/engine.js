@@ -73,30 +73,39 @@ function generateHazardBlock() {
   return { workPct, workSec, recupPct, recupSec, zoneName: zone.name };
 }
 
-// Construit la séance complète du Hazardous Mode.
-// Le coureur ne fournit que : warmupSec, workTotalSec (temps de travail visé),
-// finalRecupSec (récup de fin de séance). Tout le contenu est tiré au sort,
-// avec des pauses de séries imposées régulièrement pour rester réaliste.
+// Génère la séance Hazardous en respectant strictement le budget de temps de travail
+// fourni par le coureur : le dernier bloc (travail, récup ou pause de série) est tronqué
+// pour que la somme retombe exactement sur workTotalSec.
 export function generateHazardousQueue({ warmupSec, workTotalSec, finalRecupSec }) {
   const queue = [];
   if (warmupSec > 0) queue.push({ kind: "warmup", seconds: warmupSec });
 
-  let elapsed = 0;
+  let remaining = workTotalSec;
   let sinceLastSeriesBreak = 0;
-  // Une pause de série imposée toutes les ~6 à 10 minutes de travail cumulé
   const seriesBreakThreshold = randInt(360, 600);
 
-  while (elapsed < workTotalSec) {
+  while (remaining > 0) {
     const block = generateHazardBlock();
-    // on tolère de dépasser légèrement le temps visé sur le dernier bloc plutôt que
-    // de le tronquer en plein effort
-    queue.push({ kind: "work", pct: block.workPct, seconds: block.workSec, hazard: true });
-    queue.push({ kind: "recup", pct: block.recupPct, seconds: block.recupSec, hazard: true });
-    elapsed += block.workSec + block.recupSec;
-    sinceLastSeriesBreak += block.workSec + block.recupSec;
+    let workSec = Math.min(block.workSec, remaining);
+    let recupSec = Math.min(block.recupSec, Math.max(0, remaining - workSec));
 
-    if (sinceLastSeriesBreak >= seriesBreakThreshold && elapsed < workTotalSec) {
-      queue.push({ kind: "restSeries", seconds: randInt(90, 180), hazard: true });
+    queue.push({ kind: "work", pct: block.workPct, seconds: workSec, hazard: true });
+    remaining -= workSec;
+
+    if (recupSec > 0) {
+      queue.push({ kind: "recup", pct: block.recupPct, seconds: recupSec, hazard: true });
+      remaining -= recupSec;
+    }
+    sinceLastSeriesBreak += workSec + recupSec;
+
+    if (remaining <= 0) break;
+
+    if (sinceLastSeriesBreak >= seriesBreakThreshold) {
+      const breakSec = Math.min(randInt(90, 180), remaining);
+      if (breakSec > 0) {
+        queue.push({ kind: "restSeries", seconds: breakSec, hazard: true });
+        remaining -= breakSec;
+      }
       sinceLastSeriesBreak = 0;
     }
   }

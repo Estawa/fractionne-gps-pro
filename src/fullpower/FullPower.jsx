@@ -622,12 +622,14 @@ export default function FullPower({ runnerName, onToast }) {
                   <p className="text-2xl font-mono font-bold">{(simMode ? simSpeed : liveSpeed).toFixed(1)}</p>
                   <p className="text-xs text-slate-500">km/h actuelle</p>
                   <p className="text-sm font-mono text-slate-400 mt-0.5">{allureFromKmh(simMode ? simSpeed : liveSpeed)}</p>
+                  <p className="text-sm font-mono text-slate-400 mt-0.5">{vma > 0 ? (((simMode ? simSpeed : liveSpeed) / vma) * 100).toFixed(0) : 0}% VMA</p>
                 </div>
                 {!isHazardous && (
                   <div>
                     <p className="text-2xl font-mono font-bold text-fuchsia-300">{targetSpeed.toFixed(1)}</p>
                     <p className="text-xs text-slate-500">km/h cible</p>
                     <p className="text-sm font-mono text-fuchsia-300 mt-0.5">{allureFromKmh(targetSpeed)}</p>
+                    <p className="text-sm font-mono text-fuchsia-300 mt-0.5">{current.pct}% VMA</p>
                   </div>
                 )}
               </div>
@@ -640,6 +642,15 @@ export default function FullPower({ runnerName, onToast }) {
                   onChange={e => setSimSpeed(parseFloat(e.target.value))}
                   className="w-full mt-3 accent-fuchsia-500" />
               )}
+            </div>
+          )}
+
+          {(current.kind === "warmup" || current.kind === "finalRecup") && (
+            <div className="w-full bg-slate-900/70 rounded-2xl border border-fuchsia-500/20 p-6 flex flex-col items-center">
+              <span className="text-xs uppercase tracking-widest text-slate-500">%VMA instantané</span>
+              <span className="text-5xl font-mono font-bold mt-2 text-fuchsia-300">
+                {vma > 0 ? (((simMode ? simSpeed : liveSpeed) / vma) * 100).toFixed(0) : 0}%
+              </span>
             </div>
           )}
 
