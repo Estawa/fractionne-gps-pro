@@ -1,1 +1,112 @@
+// Moteur du mode "Full Power".
+// Construit une file de phases à plat ([{kind, pct, seconds, ...}, ...]) que l'écran
+// de course consomme séquentiellement, plutôt que de recalculer une machine à états
+// (comme le fait nextPhase() dans le mode simple). C'est plus adapté ici car
+// l'enchaînement n'est plus un simple produit série×répétition mais une composition
+// libre de blocs A/B/C/D.
 
+// --- Construction manuelle ---
+// repTypes: [{ id:'A', workPct, workSec, recupPct, recupSec }, ...] (1 à 4)
+// seriesList: [{ id, blocks: [{ repTypeId, count }], repeatCount }, ...]
+// globalRepeatCount: nombre de fois où l'on boucle l'ensemble des séries
+
+export function buildManualQueue({ repTypes, seriesList, globalRepeatCount, warmupSec, finalRecupSec }) {
+  const queue = [];
+  const byId = Object.fromEntries(repTypes.map(rt => [rt.id, rt]));
+
+  if (warmupSec > 0) queue.push({ kind: "warmup", seconds: warmupSec });
+
+  const totalLoops = Math.max(1, globalRepeatCount || 1);
+  for (let loop = 0; loop < totalLoops; loop++) {
+    seriesList.forEach((serie, sIdx) => {
+      const serieRepeat = Math.max(1, serie.repeatCount || 1);
+      for (let sr = 0; sr < serieRepeat; sr++) {
+        serie.blocks.forEach(block => {
+          const rt = byId[block.repTypeId];
+          if (!rt) return;
+          for (let i = 0; i < Math.max(1, block.count || 1); i++) {
+            queue.push({ kind: "work", pct: rt.workPct, seconds: rt.workSec, repTypeId: rt.id, seriesLabel: serie.label || `Série ${sIdx + 1}` });
+            queue.push({ kind: "recup", pct: rt.recupPct, seconds: rt.recupSec, repTypeId: rt.id, seriesLabel: serie.label || `Série ${sIdx + 1}` });
+          }
+        });
+      }
+      // pause entre séries, sauf après la toute dernière occurrence de la toute dernière série
+      const isVeryLast = loop === totalLoops - 1 && sIdx === seriesList.length - 1;
+      if (!isVeryLast && serie.restSeriesSec > 0) {
+        queue.push({ kind: "restSeries", seconds: serie.restSeriesSec });
+      }
+    });
+  }
+
+  if (finalRecupSec > 0) queue.push({ kind: "finalRecup", seconds: finalRecupSec });
+  queue.push({ kind: "finished", seconds: 0 });
+  return queue;
+}
+
+// --- Hazardous Mode : génération aléatoire cohérente ---
+// Zones de travail avec bornes %VMA, durée logique de travail (s) et ratio de récup
+// associé (%VMA récup + coefficient de durée par rapport au travail).
+const HAZARD_ZONES = [
+  { name: "sprint", workPct: [105, 120], workSec: [10, 20], recupPct: [50, 60], recupRatio: [2.2, 3.0] },
+  { name: "vma-courte", workPct: [95, 105], workSec: [20, 45], recupPct: [55, 65], recupRatio: [0.8, 1.2] },
+  { name: "vma-moyenne", workPct: [90, 100], workSec: [45, 90], recupPct: [55, 65], recupRatio: [0.8, 1.1] },
+  { name: "vma-longue", workPct: [85, 95], workSec: [120, 240], recupPct: [60, 70], recupRatio: [0.35, 0.6] },
+  { name: "seuil", workPct: [80, 90], workSec: [240, 480], recupPct: [65, 75], recupRatio: [0.2, 0.4] },
+  { name: "endurance", workPct: [65, 80], workSec: [300, 720], recupPct: [60, 70], recupRatio: [0.15, 0.3] },
+];
+
+function randInt(min, max) {
+  return Math.round(min + Math.random() * (max - min));
+}
+function randChoice(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// Génère un bloc travail+récup cohérent, piochant une zone d'intensité au hasard
+function generateHazardBlock() {
+  const zone = randChoice(HAZARD_ZONES);
+  const workPct = randInt(zone.workPct[0], zone.workPct[1]);
+  const workSec = randInt(zone.workSec[0], zone.workSec[1]);
+  const recupPct = randInt(zone.recupPct[0], zone.recupPct[1]);
+  const recupRatio = zone.recupRatio[0] + Math.random() * (zone.recupRatio[1] - zone.recupRatio[0]);
+  const recupSec = Math.max(10, Math.round(workSec * recupRatio));
+  return { workPct, workSec, recupPct, recupSec, zoneName: zone.name };
+}
+
+// Construit la séance complète du Hazardous Mode.
+// Le coureur ne fournit que : warmupSec, workTotalSec (temps de travail visé),
+// finalRecupSec (récup de fin de séance). Tout le contenu est tiré au sort,
+// avec des pauses de séries imposées régulièrement pour rester réaliste.
+export function generateHazardousQueue({ warmupSec, workTotalSec, finalRecupSec }) {
+  const queue = [];
+  if (warmupSec > 0) queue.push({ kind: "warmup", seconds: warmupSec });
+
+  let elapsed = 0;
+  let sinceLastSeriesBreak = 0;
+  // Une pause de série imposée toutes les ~6 à 10 minutes de travail cumulé
+  const seriesBreakThreshold = randInt(360, 600);
+
+  while (elapsed < workTotalSec) {
+    const block = generateHazardBlock();
+    // on tolère de dépasser légèrement le temps visé sur le dernier bloc plutôt que
+    // de le tronquer en plein effort
+    queue.push({ kind: "work", pct: block.workPct, seconds: block.workSec, hazard: true });
+    queue.push({ kind: "recup", pct: block.recupPct, seconds: block.recupSec, hazard: true });
+    elapsed += block.workSec + block.recupSec;
+    sinceLastSeriesBreak += block.workSec + block.recupSec;
+
+    if (sinceLastSeriesBreak >= seriesBreakThreshold && elapsed < workTotalSec) {
+      queue.push({ kind: "restSeries", seconds: randInt(90, 180), hazard: true });
+      sinceLastSeriesBreak = 0;
+    }
+  }
+
+  if (finalRecupSec > 0) queue.push({ kind: "finalRecup", seconds: finalRecupSec });
+  queue.push({ kind: "finished", seconds: 0 });
+  return queue;
+}
+
+export function estimateHazardousTotal({ warmupSec, workTotalSec, finalRecupSec }) {
+  // Estimation affichée avant lancement (l'appli annonce un temps total, pas le détail)
+  return (warmupSec || 0) + (workTotalSec || 0) + (finalRecupSec || 0);
+}
