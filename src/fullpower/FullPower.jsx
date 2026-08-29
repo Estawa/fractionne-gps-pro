@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Play, Pause, Square, MapPin, MapPinOff, Sliders, RotateCcw, Save, Check,
-  Plus, Trash2, ArrowLeft, BookOpen, Zap, Shuffle, ChevronRight
+  Plus, Trash2, ArrowLeft, BookOpen, Zap, Shuffle, ChevronRight, ChevronUp, ChevronDown
 } from "lucide-react";
 import { storage } from "../storage.js";
 import {
   fmtDistance, fmtDuration, fmtTime, allureFromKmh,
   playGong, playBeep, playCountdownBeep, playGunshot, playApplause,
   TOLERANCE_RATIO, SILENCE_CHECK_MS, speedRatio, beepIntervalMs, beepFrequency,
-  ZONES, classifyZone, segmentCharge, StatRow,
+  ZONES, classifyZone, segmentCharge, StatRow, getOrder, setOrder, applyOrder,
 } from "../shared.jsx";
 import { buildManualQueue, generateHazardousQueue } from "./engine.js";
 import { pickText } from "./personalization.js";
@@ -39,7 +39,7 @@ function newSeries(idx) {
 }
 
 export default function FullPower({ runnerName, onToast }) {
-  const [screen, setScreen] = useState("config"); // config | run | library
+  const [screen, setScreen] = useState("config"); // config | run | library | libraryDetail
   const [configMode, setConfigMode] = useState("manual"); // manual | hazardous
 
   // --- Config manuelle ---
@@ -58,6 +58,7 @@ export default function FullPower({ runnerName, onToast }) {
   // --- Bibliothèque ---
   const [library, setLibrary] = useState([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryDetail, setLibraryDetail] = useState(null);
 
   // --- Course ---
   const [queue, setQueue] = useState([]);
@@ -73,6 +74,7 @@ export default function FullPower({ runnerName, onToast }) {
   const [distance, setDistance] = useState(0);
 
   const [saveComment, setSaveComment] = useState("");
+  const [saveTitle, setSaveTitle] = useState("");
   const [saveStatus, setSaveStatus] = useState("idle");
 
   const watchIdRef = useRef(null);
@@ -336,11 +338,13 @@ export default function FullPower({ runnerName, onToast }) {
       const id = `fp-${Date.now()}`;
       const payload = {
         id,
+        title: saveTitle.trim() || (isHazardous ? "Séance Hazardous" : "Séance Full Power"),
         mode: isHazardous ? "hazardous" : "manual",
         savedAt: Date.now(),
         date: new Date().toISOString().slice(0, 10),
         comment: saveComment,
         vma,
+        queue, // séquence exacte jouée, pour pouvoir refaire la séance à l'identique
         config: isHazardous
           ? { warmupSec: hzWarmupSec, workTotalSec: hzWorkTotalSec, finalRecupSec: hzFinalRecupSec }
           : { repTypes: repTypes.filter(rt => rt.enabled), seriesList, globalRepeatCount, warmupSec, finalRecupSec },
@@ -348,6 +352,9 @@ export default function FullPower({ runnerName, onToast }) {
           workDist: acc.current.work.dist, workTime: acc.current.work.time,
           recupDist: acc.current.recup.dist, recupTime: acc.current.recup.time,
           maxSpeed: acc.current.maxSpeed,
+          workAvgSpeed, workAvgPctVma, sessionCharge,
+          totalSessionTime, totalDistanceAll,
+          primaryZone: { label: primaryZone.label, effect: primaryZone.effect },
         },
       };
       await storage.set(`fullpower-sessions:${id}`, JSON.stringify(payload));
@@ -369,12 +376,55 @@ export default function FullPower({ runnerName, onToast }) {
           if (r?.value) items.push(JSON.parse(r.value));
         } catch { /* ignore */ }
       }
-      items.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
-      setLibrary(items);
+      const order = await getOrder(storage, "fullpower-library-order");
+      const ordered = applyOrder(items, order);
+      setLibrary(ordered);
+      await setOrder(storage, "fullpower-library-order", ordered.map(i => i.id));
     } catch { /* ignore */ }
     setLibraryLoading(false);
   }
   function openLibrary() { setScreen("library"); loadLibrary(); }
+
+  async function moveLibraryItem(id, direction) {
+    const idx = library.findIndex(s => s.id === id);
+    const swapIdx = idx + direction;
+    if (idx < 0 || swapIdx < 0 || swapIdx >= library.length) return;
+    const reordered = [...library];
+    [reordered[idx], reordered[swapIdx]] = [reordered[swapIdx], reordered[idx]];
+    setLibrary(reordered);
+    await setOrder(storage, "fullpower-library-order", reordered.map(i => i.id));
+  }
+
+  async function deleteLibraryItem(id) {
+    try { await storage.delete(`fullpower-sessions:${id}`); } catch { /* ignore */ }
+    loadLibrary();
+  }
+
+  function openLibraryDetail(saved) {
+    setLibraryDetail(saved);
+    setScreen("libraryDetail");
+  }
+
+  // Relance la séance sauvegardée à l'identique (même file de phases, même VMA)
+  function replaySavedSession(saved) {
+    if (!saved?.queue?.length) return;
+    resetAcc();
+    setVma(saved.vma ?? vma);
+    setQueue(saved.queue);
+    setQIndex(0);
+    setSaveComment("");
+    setSaveTitle("");
+    setSaveStatus("idle");
+    if (saved.mode === "hazardous") {
+      setScreen("run");
+      setStatus("paused");
+      setRocketCount(10);
+    } else {
+      setSecondsLeft(saved.queue[0]?.seconds || 0);
+      setScreen("run");
+      setStatus("running");
+    }
+  }
 
   const totalWorkTime = acc.current.work.time;
   const totalRecupTime = acc.current.recup.time;
@@ -397,7 +447,10 @@ export default function FullPower({ runnerName, onToast }) {
           </h1>
         </div>
         {screen !== "config" && screen !== "run" && (
-          <button onClick={() => setScreen("config")} className="text-slate-400 flex items-center gap-1 text-sm">
+          <button
+            onClick={() => setScreen(screen === "libraryDetail" ? "library" : "config")}
+            className="text-slate-400 flex items-center gap-1 text-sm"
+          >
             <ArrowLeft size={14} /> Retour
           </button>
         )}
@@ -562,20 +615,93 @@ export default function FullPower({ runnerName, onToast }) {
           {!libraryLoading && library.length === 0 && (
             <p className="text-sm text-slate-500 text-center">Aucune séance Full Power enregistrée.</p>
           )}
-          {library.map(s => (
+          {library.map((s, idx) => (
             <div key={s.id} className="bg-slate-900/70 rounded-2xl p-4 border border-fuchsia-500/20 space-y-1.5">
-              <div className="flex justify-between items-center">
-                <span className="font-semibold text-sm">{s.date}</span>
-                <span className={`text-xs px-2 py-0.5 rounded-full ${s.mode === "hazardous" ? "bg-purple-500/20 text-purple-300" : "bg-fuchsia-500/20 text-fuchsia-300"}`}>
+              <div className="flex justify-between items-start gap-2">
+                <button onClick={() => openLibraryDetail(s)} className="text-left flex-1">
+                  <span className="font-semibold text-sm block">{s.title || "Séance sans nom"}</span>
+                  <span className="text-xs text-slate-500">{s.date}</span>
+                </button>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button onClick={() => moveLibraryItem(s.id, -1)} disabled={idx === 0}
+                    className="text-slate-500 hover:text-slate-200 disabled:opacity-30">
+                    <ChevronUp size={16} />
+                  </button>
+                  <button onClick={() => moveLibraryItem(s.id, 1)} disabled={idx === library.length - 1}
+                    className="text-slate-500 hover:text-slate-200 disabled:opacity-30">
+                    <ChevronDown size={16} />
+                  </button>
+                  <button onClick={() => deleteLibraryItem(s.id)} className="text-slate-500 hover:text-rose-400">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </div>
+              <button onClick={() => openLibraryDetail(s)} className="text-left w-full space-y-1.5">
+                <span className={`text-xs px-2 py-0.5 rounded-full inline-block ${s.mode === "hazardous" ? "bg-purple-500/20 text-purple-300" : "bg-fuchsia-500/20 text-fuchsia-300"}`}>
                   {s.mode === "hazardous" ? "Hazardous" : "Manuel"}
                 </span>
-              </div>
-              <p className="text-xs text-slate-400">
-                Travail : {fmtDuration(s.totals?.workTime || 0)} · Vmax : {(s.totals?.maxSpeed || 0).toFixed(1)} km/h
-              </p>
-              {s.comment && <p className="text-sm italic text-slate-300">"{s.comment}"</p>}
+                <p className="text-xs text-slate-400">
+                  Travail : {fmtDuration(s.totals?.workTime || 0)} · Vmax : {(s.totals?.maxSpeed || 0).toFixed(1)} km/h
+                </p>
+                {s.comment && <p className="text-sm italic text-slate-300">"{s.comment}"</p>}
+              </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {screen === "libraryDetail" && libraryDetail && (
+        <div className="w-full max-w-md space-y-4">
+          <div className="bg-slate-900/70 rounded-2xl p-5 border border-fuchsia-500/20 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold">{libraryDetail.title || "Séance sans nom"}</h2>
+              <span className={`text-xs px-2 py-0.5 rounded-full ${libraryDetail.mode === "hazardous" ? "bg-purple-500/20 text-purple-300" : "bg-fuchsia-500/20 text-fuchsia-300"}`}>
+                {libraryDetail.mode === "hazardous" ? "Hazardous" : "Manuel"}
+              </span>
+            </div>
+            <p className="text-xs text-slate-500">{libraryDetail.date}</p>
+
+            <div className="space-y-2 pt-2 border-t border-slate-800">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Vitesses</p>
+              <StatRow label="Vitesse maximale atteinte" value={`${(libraryDetail.totals?.maxSpeed || 0).toFixed(1)} km/h · ${allureFromKmh(libraryDetail.totals?.maxSpeed || 0)}`} />
+              <StatRow label="Vitesse moy. de travail" value={`${(libraryDetail.totals?.workAvgSpeed || 0).toFixed(1)} km/h`}
+                sub={`${(libraryDetail.totals?.workAvgPctVma || 0).toFixed(0)}% VMA`} />
+            </div>
+
+            {libraryDetail.totals?.primaryZone && (
+              <div className="space-y-2 pt-2 border-t border-slate-800">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Objectif atteint</p>
+                <StatRow label="Zone principale" value={libraryDetail.totals.primaryZone.label} sub={libraryDetail.totals.primaryZone.effect} />
+              </div>
+            )}
+
+            <div className="space-y-2 pt-2 border-t border-slate-800">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Charge</p>
+              <StatRow label="Indicateur de charge" value={(libraryDetail.totals?.sessionCharge || 0).toFixed(1)} sub="1 min à 100% VMA = charge de 1" />
+            </div>
+
+            <div className="space-y-2 pt-2 border-t border-slate-800">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Temps &amp; distances</p>
+              <StatRow label="Temps total" value={fmtDuration(libraryDetail.totals?.totalSessionTime || 0)} />
+              <StatRow label="Temps de travail" value={fmtDuration(libraryDetail.totals?.workTime || 0)} />
+              <StatRow label="Temps de récupération" value={fmtDuration(libraryDetail.totals?.recupTime || 0)} />
+              <StatRow label="Distance totale" value={fmtDistance(libraryDetail.totals?.totalDistanceAll || 0)} />
+            </div>
+
+            {libraryDetail.comment && (
+              <div className="pt-2 border-t border-slate-800">
+                <p className="text-xs uppercase tracking-wide text-slate-500 mb-1">Commentaire</p>
+                <p className="text-sm italic text-slate-300">"{libraryDetail.comment}"</p>
+              </div>
+            )}
+
+            <button
+              onClick={() => replaySavedSession(libraryDetail)}
+              className="w-full bg-gradient-to-r from-fuchsia-600 to-purple-600 hover:opacity-90 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2"
+            >
+              <RotateCcw size={18} /> Refaire cette séance
+            </button>
+          </div>
         </div>
       )}
 
@@ -701,6 +827,11 @@ export default function FullPower({ runnerName, onToast }) {
                 <p className="text-xs uppercase tracking-wide text-slate-500 flex items-center gap-1.5">
                   <Save size={14} /> Enregistrer dans la bibliothèque Full Power
                 </p>
+                <input
+                  type="text" value={saveTitle} onChange={e => setSaveTitle(e.target.value)}
+                  placeholder="Nom de la séance"
+                  className="w-full bg-slate-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-fuchsia-500"
+                />
                 <textarea
                   value={saveComment} onChange={e => setSaveComment(e.target.value)}
                   rows={3} placeholder="Commentaire sur la séance..."
