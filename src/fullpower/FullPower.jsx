@@ -9,9 +9,12 @@ import {
   playGong, playBeep, playCountdownBeep, playGunshot, playApplause,
   TOLERANCE_RATIO, SILENCE_CHECK_MS, speedRatio, beepIntervalMs, beepFrequency,
   ZONES, classifyZone, segmentCharge, StatRow, getOrder, setOrder, applyOrder,
+  useWakeLock, saveActiveSession, loadActiveSession, clearActiveSession,
 } from "../shared.jsx";
 import { buildManualQueue, generateHazardousQueue } from "./engine.js";
 import { pickText } from "./personalization.js";
+
+const ACTIVE_SESSION_KEY = "activeSession-fullpower";
 
 const REP_IDS = ["A", "B", "C", "D"];
 const REP_COLORS = {
@@ -89,6 +92,56 @@ export default function FullPower({ runnerName, onToast }) {
   const secondsLeftRef = useRef(0);
   const recupTextFiredRef = useRef(false);
   const raceStartFiredRef = useRef(false);
+  // Miroir synchrone de `distance`, utilisé pour les sauvegardes de séance.
+  const distanceRef = useRef(0);
+  // Évite que le reset automatique de distance (sur changement de phase) n'écrase la
+  // distance qu'on vient de restaurer au moment précis d'une reprise de séance.
+  const skipDistanceResetRef = useRef(false);
+
+  // --- Reprise après extinction/relance de l'appli ---
+  const [resumeSnapshot, setResumeSnapshot] = useState(null);
+
+  // Empêche l'écran de s'éteindre tout seul tant qu'une course est active.
+  useWakeLock(screen === "run" && status === "running");
+
+  // Au montage : une séance Full Power a-t-elle été interrompue (écran éteint, appli tuée) ?
+  useEffect(() => {
+    (async () => {
+      const snap = await loadActiveSession(storage, ACTIVE_SESSION_KEY);
+      if (snap?.queue?.length && snap.current?.kind && snap.current.kind !== "finished") {
+        setResumeSnapshot(snap);
+      } else if (snap) {
+        clearActiveSession(storage, ACTIVE_SESSION_KEY);
+      }
+    })();
+  }, []);
+
+  function resumeFromSnapshot() {
+    const snap = resumeSnapshot;
+    if (!snap) return;
+    setVma(snap.vma ?? 15);
+    acc.current = snap.acc || {
+      work: { dist: 0, time: 0 }, recup: { dist: 0, time: 0 },
+      restSeries: { dist: 0, time: 0 }, warmupFinal: { dist: 0, time: 0 },
+      maxSpeed: 0,
+    };
+    raceStartFiredRef.current = true; // évite de rejouer le texte "départ" en reprenant en pleine course
+    recupTextFiredRef.current = true;
+    distanceRef.current = snap.distance || 0;
+    setDistance(snap.distance || 0);
+    skipDistanceResetRef.current = true;
+    setQueue(snap.queue);
+    setQIndex(snap.qIndex || 0);
+    setSecondsLeft(snap.secondsLeft || 0);
+    setScreen("run");
+    setStatus("paused"); // reprise en pause : l'utilisateur relance volontairement (GPS/bips/timer)
+    setResumeSnapshot(null);
+  }
+
+  function discardSnapshot() {
+    clearActiveSession(storage, ACTIVE_SESSION_KEY);
+    setResumeSnapshot(null);
+  }
 
   const isHazardous = queue.length > 0 && queue.some(p => p.hazard);
 
@@ -143,32 +196,74 @@ export default function FullPower({ runnerName, onToast }) {
       const cur = queueRef.current[qIndexRef.current];
       if (!cur) return;
       accumulate(cur.kind, speedNow);
-      setDistance(d => d + speedNow / 3.6);
+      distanceRef.current += speedNow / 3.6;
+      setDistance(distanceRef.current);
 
       setSecondsLeft(s => {
+        let nextIdx = qIndexRef.current;
+        let secondsForNext = s;
         if (s > 1) {
           // texte "5 secondes avant la fin de la récup" — uniquement en récup normale (hors récup finale)
           if (cur.kind === "recup" && s - 1 === 5 && !recupTextFiredRef.current) {
             recupTextFiredRef.current = true;
             onToast?.(pickText("recupEndingSoon", runnerName));
           }
-          return s - 1;
+          secondsForNext = s - 1;
+        } else {
+          // fin de la phase courante -> passage à la suivante
+          nextIdx = qIndexRef.current + 1;
+          const nextPhase = queueRef.current[nextIdx] || { kind: "finished", seconds: 0 };
+          recupTextFiredRef.current = false;
+          setQIndex(nextIdx);
+          if (nextPhase.kind === "finished") setStatus("paused");
+          secondsForNext = nextPhase.seconds;
         }
-        // fin de la phase courante -> passage à la suivante
-        const nextIdx = qIndexRef.current + 1;
-        const nextPhase = queueRef.current[nextIdx] || { kind: "finished", seconds: 0 };
-        recupTextFiredRef.current = false;
-        setQIndex(nextIdx);
-        if (nextPhase.kind === "finished") setStatus("paused");
-        return nextPhase.seconds;
+        const nextPhaseKind = (queueRef.current[nextIdx] || { kind: "finished" }).kind;
+        if (nextPhaseKind === "finished") {
+          clearActiveSession(storage, ACTIVE_SESSION_KEY);
+        } else {
+          saveActiveSession(storage, ACTIVE_SESSION_KEY, {
+            vma, queue: queueRef.current, qIndex: nextIdx, secondsLeft: secondsForNext,
+            distance: distanceRef.current, acc: acc.current,
+            current: { kind: nextPhaseKind },
+          });
+        }
+        return secondsForNext;
       });
     }, 1000);
     return () => clearInterval(id);
-  }, [status, runnerName, onToast]);
+  }, [status, runnerName, onToast, vma]);
+
+  // Sauvegarde immédiate juste avant que l'écran s'éteigne ou que l'appli passe en
+  // arrière-plan : c'est le moment où l'OS peut décider de tuer la page.
+  useEffect(() => {
+    function saveNow() {
+      const cur = queueRef.current[qIndexRef.current];
+      if (screen === "run" && cur && cur.kind !== "finished") {
+        saveActiveSession(storage, ACTIVE_SESSION_KEY, {
+          vma, queue: queueRef.current, qIndex: qIndexRef.current, secondsLeft: secondsLeftRef.current,
+          distance: distanceRef.current, acc: acc.current,
+          current: { kind: cur.kind },
+        });
+      }
+    }
+    function onVisibility() {
+      if (document.visibilityState === "hidden") saveNow();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", saveNow);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", saveNow);
+    };
+  }, [screen, vma]);
 
   // reset distance à chaque changement de phase + textes contextuels
+  // (sauf juste après une reprise de séance, où la distance restaurée doit être conservée)
   useEffect(() => {
+    if (skipDistanceResetRef.current) { skipDistanceResetRef.current = false; return; }
     setDistance(0);
+    distanceRef.current = 0;
     const cur = queue[qIndex];
     if (!cur) return;
     if (cur.kind === "work" && !raceStartFiredRef.current) {
@@ -314,6 +409,8 @@ export default function FullPower({ runnerName, onToast }) {
       globalRepeatCount, warmupSec, finalRecupSec, startLatencySec,
     });
     resetAcc();
+    distanceRef.current = 0;
+    clearActiveSession(storage, ACTIVE_SESSION_KEY);
     setQueue(q);
     setQIndex(0);
     setSecondsLeft(q[0]?.seconds || 0);
@@ -326,6 +423,8 @@ export default function FullPower({ runnerName, onToast }) {
       warmupSec: hzWarmupSec, workTotalSec: hzWorkTotalSec, finalRecupSec: hzFinalRecupSec,
     });
     resetAcc();
+    distanceRef.current = 0;
+    clearActiveSession(storage, ACTIVE_SESSION_KEY);
     setQueue(q);
     setQIndex(0);
     // décompte façon décollage de fusée avant de révéler l'écran de course
@@ -357,6 +456,7 @@ export default function FullPower({ runnerName, onToast }) {
     setRocketCount(null);
     if (beepTimeoutRef.current) clearTimeout(beepTimeoutRef.current);
     if (rocketTimeoutRef.current) clearTimeout(rocketTimeoutRef.current);
+    clearActiveSession(storage, ACTIVE_SESSION_KEY);
   }
 
   async function saveSession() {
@@ -436,6 +536,8 @@ export default function FullPower({ runnerName, onToast }) {
   function replaySavedSession(saved) {
     if (!saved?.queue?.length) return;
     resetAcc();
+    distanceRef.current = 0;
+    clearActiveSession(storage, ACTIVE_SESSION_KEY);
     setVma(saved.vma ?? vma);
     setQueue(saved.queue);
     setQIndex(0);
@@ -466,6 +568,31 @@ export default function FullPower({ runnerName, onToast }) {
 
   return (
     <div className="min-h-full w-full bg-gradient-to-br from-fuchsia-950 via-purple-950 to-slate-950 text-slate-100 flex flex-col items-center px-4 py-6 gap-6">
+      {resumeSnapshot && (
+        <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center px-6">
+          <div className="w-full max-w-xs bg-slate-900 border border-fuchsia-500/40 rounded-2xl p-5 flex flex-col items-center gap-4">
+            <Zap size={24} className="text-fuchsia-400" />
+            <p className="text-sm text-slate-200 text-center">
+              Une séance Full Power a été interrompue (écran éteint ou appli fermée). Veux-tu la reprendre là où tu t'étais arrêté ?
+            </p>
+            <div className="flex w-full gap-2">
+              <button
+                onClick={discardSnapshot}
+                className="flex-1 py-2 rounded-lg text-sm font-semibold bg-slate-800 text-slate-200"
+              >
+                Ignorer
+              </button>
+              <button
+                onClick={resumeFromSnapshot}
+                className="flex-1 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-fuchsia-600 to-purple-600 text-white"
+              >
+                Reprendre
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="w-full max-w-md flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Zap size={20} className="text-fuchsia-400" />
