@@ -2,6 +2,73 @@
 // Dupliquées ici (plutôt que ré-exportées) pour ne pas toucher au fichier du mode simple
 // qui fonctionne déjà en production.
 
+import { useRef, useCallback, useEffect } from "react";
+
+// --- Wake Lock : empêche l'écran de s'éteindre tout seul pendant une séance active ---
+// Le verrou est automatiquement relâché par le système quand l'onglet passe en
+// arrière-plan (écran éteint) : on le redemande donc dès que l'écran redevient visible,
+// tant que `active` est vrai. Ça ne peut pas empêcher un appui volontaire sur le bouton
+// power (aucune appli web ne peut bloquer ça), mais ça supprime l'extinction automatique.
+export function useWakeLock(active) {
+  const lockRef = useRef(null);
+
+  const acquire = useCallback(async () => {
+    if (!("wakeLock" in navigator)) return;
+    try {
+      lockRef.current = await navigator.wakeLock.request("screen");
+    } catch (e) {
+      // Refusé (ex. batterie faible) ou non supporté : on continue sans bloquer l'appli.
+    }
+  }, []);
+
+  const release = useCallback(() => {
+    if (lockRef.current) {
+      lockRef.current.release().catch(() => {});
+      lockRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (active) acquire(); else release();
+    return release;
+  }, [active, acquire, release]);
+
+  useEffect(() => {
+    function onVisibility() {
+      if (active && document.visibilityState === "visible") acquire();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [active, acquire]);
+}
+
+// --- Sauvegarde/reprise de la séance en cours ---
+// But : si l'OS tue l'appli (écran éteint, mémoire faible...), on retrouve la séance
+// en cours au lieu de repartir de zéro. `key` distingue mode simple / Full Power.
+export async function saveActiveSession(storageObj, key, snapshot) {
+  try {
+    await storageObj.set(key, JSON.stringify({ ...snapshot, savedAt: Date.now() }));
+  } catch (e) {
+    // Stockage plein ou indisponible : tant pis pour cette sauvegarde ponctuelle.
+  }
+}
+
+export async function loadActiveSession(storageObj, key, maxAgeMs = 6 * 3600 * 1000) {
+  try {
+    const r = await storageObj.get(key);
+    if (!r?.value) return null;
+    const snap = JSON.parse(r.value);
+    if (!snap || Date.now() - (snap.savedAt || 0) > maxAgeMs) return null;
+    return snap;
+  } catch (e) {
+    return null;
+  }
+}
+
+export async function clearActiveSession(storageObj, key) {
+  try { await storageObj.delete(key); } catch (e) { /* déjà absent : rien à faire */ }
+}
+
 export function fmtDistance(meters) {
   if (meters < 1000) return `${Math.round(meters)} m`;
   return `${(meters / 1000).toFixed(2)} km`;
@@ -62,6 +129,67 @@ export function playSingleGong(ctx) {
 export function playGong(ctx, times = 1, gap = 380) {
   if (!ctx) return;
   for (let i = 0; i < times; i++) setTimeout(() => playSingleGong(ctx), i * gap);
+}
+
+// Gong de départ d'un run (entrée en phase de travail) : clair, énergique, plutôt aigu.
+export function playGongStart(ctx) {
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const master = ctx.createGain();
+  master.gain.value = 0.5;
+  master.connect(ctx.destination);
+  [220, 330].forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = "triangle";
+    osc.frequency.value = freq;
+    g.gain.value = 0.55;
+    osc.connect(g);
+    g.connect(master);
+    osc.start(now);
+    g.gain.setValueAtTime(0.55, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.5 + i * 0.05);
+    osc.stop(now + 0.6);
+  });
+  const strike = ctx.createOscillator();
+  const strikeGain = ctx.createGain();
+  strike.type = "square";
+  strike.frequency.value = 1400;
+  strikeGain.gain.value = 0.3;
+  strike.connect(strikeGain);
+  strikeGain.connect(master);
+  strike.start(now);
+  strikeGain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+  strike.stop(now + 0.12);
+}
+
+// Gong de fin d'un run (entrée en récupération) : grave, posé, plus long.
+export function playGongStop(ctx) {
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const master = ctx.createGain();
+  master.gain.value = 0.5;
+  master.connect(ctx.destination);
+  [80, 120].forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    g.gain.value = 0.6;
+    osc.connect(g);
+    g.connect(master);
+    osc.start(now);
+    g.gain.setValueAtTime(0.6, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 1.8 + i * 0.15);
+    osc.stop(now + 2.0);
+  });
+}
+
+// Point sur le cadran (cercle de rayon r centré sur cx,cy) pour un angle d'aiguille donné
+// (0° = tout en haut, sens horaire positif). Partagé par les cadrans du mode Simple et Full Power.
+export function gaugePoint(angleDeg, r = 85, cx = 100, cy = 100) {
+  const rad = (angleDeg * Math.PI) / 180;
+  return { x: cx + r * Math.sin(rad), y: cy - r * Math.cos(rad) };
 }
 
 export function playBeep(ctx, freq, duration = 0.09, gain = 0.15) {
