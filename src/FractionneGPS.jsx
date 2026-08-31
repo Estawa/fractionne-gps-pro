@@ -6,7 +6,12 @@ import {
 } from "lucide-react";
 import { storage } from "./storage.js";
 import { PRESETS } from "./presets.js";
-import { playApplause, getOrder, setOrder, applyOrder } from "./shared.jsx";
+import {
+  playApplause, getOrder, setOrder, applyOrder,
+  useWakeLock, saveActiveSession, loadActiveSession, clearActiveSession,
+} from "./shared.jsx";
+
+const ACTIVE_SESSION_KEY = "activeSession-simple";
 
 // ---------- Constantes & helpers ----------
 
@@ -130,9 +135,70 @@ function playBeep(ctx, freq, duration = 0.09, gain = 0.15) {
   osc.stop(ctx.currentTime + duration + 0.02);
 }
 
+// Gong de départ d'un run (entrée en "effort") : clair, énergique, plutôt aigu — signal de "go".
+function playGongStart(ctx) {
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const master = ctx.createGain();
+  master.gain.value = 0.5;
+  master.connect(ctx.destination);
+  [220, 330].forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = "triangle";
+    osc.frequency.value = freq;
+    g.gain.value = 0.55;
+    osc.connect(g);
+    g.connect(master);
+    osc.start(now);
+    g.gain.setValueAtTime(0.55, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.5 + i * 0.05);
+    osc.stop(now + 0.6);
+  });
+  const strike = ctx.createOscillator();
+  const strikeGain = ctx.createGain();
+  strike.type = "square";
+  strike.frequency.value = 1400;
+  strikeGain.gain.value = 0.3;
+  strike.connect(strikeGain);
+  strikeGain.connect(master);
+  strike.start(now);
+  strikeGain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+  strike.stop(now + 0.12);
+}
+
+// Gong de fin d'un run (entrée en "récup'") : grave, posé, plus long — signal de "relâche".
+function playGongStop(ctx) {
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const master = ctx.createGain();
+  master.gain.value = 0.5;
+  master.connect(ctx.destination);
+  [80, 120].forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    g.gain.value = 0.6;
+    osc.connect(g);
+    g.connect(master);
+    osc.start(now);
+    g.gain.setValueAtTime(0.6, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 1.8 + i * 0.15);
+    osc.stop(now + 2.0);
+  });
+}
+
 // Zone de tolérance : dans cet écart relatif autour de la cible, silence total
 const TOLERANCE_RATIO = 0.07; // ±7% de la vitesse cible
 const SILENCE_CHECK_MS = 350; // fréquence de recontrôle pendant le silence
+
+// Point sur le cadran (cercle de rayon r centré sur cx,cy) pour un angle d'aiguille donné
+// (même convention que needleAngle : 0° = tout en haut, sens horaire positif)
+function gaugePoint(angleDeg, r = 85, cx = 100, cy = 100) {
+  const rad = (angleDeg * Math.PI) / 180;
+  return { x: cx + r * Math.sin(rad), y: cy - r * Math.cos(rad) };
+}
 
 function speedRatio(speed, target) {
   if (!target || target <= 0) return 0;
@@ -241,6 +307,64 @@ export default function FractionneGPS() {
   const liveSpeedRef = useRef(0);
   const targetSpeedRef = useRef(0);
   const prevPhaseRef = useRef(null);
+  // Miroir synchrone de `distance`, utilisé pour les sauvegardes de séance (état toujours
+  // à jour, contrairement à une valeur de state capturée dans une closure d'effet).
+  const distanceRef = useRef(0);
+  // Évite que le reset automatique de distance (sur changement de phase) n'écrase la
+  // distance qu'on vient de restaurer au moment précis d'une reprise de séance.
+  const skipDistanceResetRef = useRef(false);
+
+  // --- Reprise après extinction/relance de l'appli ---
+  const [resumeSnapshot, setResumeSnapshot] = useState(null);
+
+  // Empêche l'écran de s'éteindre tout seul tant qu'une course est active.
+  useWakeLock(screen === "run" && status === "running");
+
+  // Au montage : une séance a-t-elle été interrompue (écran éteint, appli tuée) ?
+  useEffect(() => {
+    (async () => {
+      const snap = await loadActiveSession(storage, ACTIVE_SESSION_KEY);
+      if (snap?.run?.phase && snap.run.phase !== "finished") {
+        setResumeSnapshot(snap);
+      } else if (snap) {
+        clearActiveSession(storage, ACTIVE_SESSION_KEY);
+      }
+    })();
+  }, []);
+
+  function resumeFromSnapshot() {
+    const snap = resumeSnapshot;
+    if (!snap) return;
+    const c = snap.cfg || {};
+    setVma(c.vma ?? 15);
+    setEffortPct(c.effortPct ?? 100);
+    setRecupPct(c.recupPct ?? 50);
+    setWorkSec(c.workSec ?? 30);
+    setRestSec(c.restSec ?? 30);
+    setReps(c.reps ?? 9);
+    setSeries(c.series ?? 3);
+    setRestSeriesSec(c.restSeriesSec ?? 180);
+    setWarmupSec(c.warmupSec ?? 0);
+    setFinalRecupSec(c.finalRecupSec ?? 0);
+    setStartLatencySec(c.startLatencySec ?? 4);
+    seriesAccRef.current = snap.seriesAcc || { series: snap.run.series, effortDist: 0, effortTime: 0, recupDist: 0, recupTime: 0 };
+    globalAccRef.current = snap.globalAcc || {
+      effortDist: 0, effortTime: 0, recupDist: 0, recupTime: 0,
+      restSeriesDist: 0, restSeriesTime: 0, warmupFinalDist: 0, warmupFinalTime: 0, maxSpeed: 0,
+    };
+    distanceRef.current = snap.distance || 0;
+    setDistance(snap.distance || 0);
+    skipDistanceResetRef.current = true;
+    setRun(snap.run);
+    setScreen("run");
+    setStatus("paused"); // reprise en pause : l'utilisateur relance volontairement (GPS/bips/timer)
+    setResumeSnapshot(null);
+  }
+
+  function discardSnapshot() {
+    clearActiveSession(storage, ACTIVE_SESSION_KEY);
+    setResumeSnapshot(null);
+  }
 
   // Accumulateurs (mètres et secondes) — série en cours
   const seriesAccRef = useRef({ series: 1, effortDist: 0, effortTime: 0, recupDist: 0, recupTime: 0 });
@@ -303,21 +427,60 @@ export default function FractionneGPS() {
     const id = setInterval(() => {
       const speedNow = liveSpeedRef.current;
       accumulate(runRef.current.phase, runRef.current.series, speedNow);
-      setDistance(d => d + speedNow / 3.6);
+      distanceRef.current += speedNow / 3.6;
+      setDistance(distanceRef.current);
       setRun(prev => {
+        let next;
         if (prev.secondsLeft > 1) {
-          return { ...prev, secondsLeft: prev.secondsLeft - 1 };
+          next = { ...prev, secondsLeft: prev.secondsLeft - 1 };
+        } else {
+          next = nextPhase(prev, cfg);
+          if (next.phase === "finished") setStatus("paused");
         }
-        const next = nextPhase(prev, cfg);
-        if (next.phase === "finished") setStatus("paused");
+        if (next.phase === "finished") {
+          clearActiveSession(storage, ACTIVE_SESSION_KEY);
+        } else {
+          saveActiveSession(storage, ACTIVE_SESSION_KEY, {
+            cfg, run: next, distance: distanceRef.current,
+            seriesAcc: seriesAccRef.current, globalAcc: globalAccRef.current,
+          });
+        }
         return next;
       });
     }, 1000);
     return () => clearInterval(id);
   }, [status, cfg]);
 
-  // reset distance à chaque changement de phase
-  useEffect(() => { setDistance(0); }, [run.phase, run.rep, run.series]);
+  // Sauvegarde immédiate juste avant que l'écran s'éteigne ou que l'appli passe en
+  // arrière-plan : c'est le moment où l'OS peut décider de tuer la page, donc on ne
+  // compte pas sur le prochain tick du timer pour persister l'état.
+  useEffect(() => {
+    function saveNow() {
+      if (screen === "run" && runRef.current.phase !== "finished") {
+        saveActiveSession(storage, ACTIVE_SESSION_KEY, {
+          cfg, run: runRef.current, distance: distanceRef.current,
+          seriesAcc: seriesAccRef.current, globalAcc: globalAccRef.current,
+        });
+      }
+    }
+    function onVisibility() {
+      if (document.visibilityState === "hidden") saveNow();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", saveNow);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", saveNow);
+    };
+  }, [screen, cfg]);
+
+  // reset distance à chaque changement de phase (sauf juste après une reprise de séance,
+  // où la distance restaurée doit être conservée)
+  useEffect(() => {
+    if (skipDistanceResetRef.current) { skipDistanceResetRef.current = false; return; }
+    distanceRef.current = 0;
+    setDistance(0);
+  }, [run.phase, run.rep, run.series]);
 
   // --- GPS ---
   // Le GPS reste actif pendant l'échauffement et la récup' finale même si le mode
@@ -344,7 +507,7 @@ export default function FractionneGPS() {
         }
       },
       () => setGpsStatus("denied"),
-      { enableHighAccuracy: true, maximumAge: 1000, timeout: 8000 }
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 8000 }
     );
     return () => {
       if (watchIdRef.current !== null) {
@@ -399,15 +562,24 @@ export default function FractionneGPS() {
       setSaveStatus("idle");
     }
   }, [run.phase]);
-  // Double gong pour les pauses entre séries (avant et après), simple gong sinon
+  // Gong différencié selon la transition : départ d'un run, fin d'un run (récup'),
+  // ou pause de série (double gong, inchangé) — pour bien distinguer les trois à l'oreille.
   useEffect(() => {
     if (screen !== "run") { prevPhaseRef.current = null; return; }
     const prev = prevPhaseRef.current;
     if (prev !== null && prev !== run.phase) {
+      const ctx = ensureAudioCtx();
       const isSeriesBoundary = prev === "restSeries" || run.phase === "restSeries";
-      playGong(ensureAudioCtx(), isSeriesBoundary ? 2 : 1);
+      if (isSeriesBoundary) {
+        playGong(ctx, 2);
+      } else if (run.phase === "effort") {
+        playGongStart(ctx);
+      } else if (run.phase === "recup") {
+        playGongStop(ctx);
+      } else {
+        playGong(ctx, 1);
+      }
       if (run.phase === "finished") {
-        const ctx = ensureAudioCtx();
         setTimeout(() => playApplause(ctx, 3), 400);
       }
     }
@@ -553,6 +725,7 @@ export default function FractionneGPS() {
   function startSession() {
     const initialPhase = cfg.warmupSec > 0 ? "warmup" : "effort";
     const initialSeconds = cfg.warmupSec > 0 ? cfg.warmupSec : cfg.workSec;
+    distanceRef.current = 0;
     setRun({ phase: initialPhase, series: 1, rep: 1, secondsLeft: initialSeconds });
     setDistance(0);
     seriesAccRef.current = { series: 1, effortDist: 0, effortTime: 0, recupDist: 0, recupTime: 0 };
@@ -573,9 +746,19 @@ export default function FractionneGPS() {
     setStatus("paused");
     setScreen("config");
     if (beepTimeoutRef.current) clearTimeout(beepTimeoutRef.current);
+    clearActiveSession(storage, ACTIVE_SESSION_KEY);
   }
 
   const totalReps = cfg.series * cfg.reps;
+
+  // Durée totale planifiée de la séance (échauffement + tous les efforts/récup' + pauses
+  // de séries + récup' finale), pour en déduire un temps restant global.
+  const totalPlannedSeconds = useMemo(() => {
+    return cfg.warmupSec
+      + cfg.series * cfg.reps * (cfg.workSec + cfg.restSec)
+      + Math.max(0, cfg.series - 1) * cfg.restSeriesSec
+      + cfg.finalRecupSec;
+  }, [cfg]);
   let doneReps;
   if (run.phase === "warmup") {
     doneReps = 0;
@@ -602,6 +785,18 @@ export default function FractionneGPS() {
     return (clamped - 1) * 180; // -90 .. +90
   }, [currentSpeed, targetSpeed]);
 
+  // Bornes de la zone verte (silence) alignées sur la vraie tolérance des bips (±TOLERANCE_RATIO),
+  // pour que l'aiguille entre dans le vert exactement quand les bips s'arrêtent.
+  const gaugePoints = useMemo(() => {
+    const toleranceAngle = TOLERANCE_RATIO * 180;
+    return {
+      left: gaugePoint(-90),
+      innerLeft: gaugePoint(-toleranceAngle),
+      innerRight: gaugePoint(toleranceAngle),
+      right: gaugePoint(90),
+    };
+  }, []);
+
   // --- Stats dérivées : récap de la série en cours (pendant récup' / pause série) ---
   const sAcc = seriesAccRef.current;
   const seriesTotalDist = sAcc.effortDist + sAcc.recupDist;
@@ -623,6 +818,7 @@ export default function FractionneGPS() {
     ? ((gAcc.effortDist + gAcc.recupDist) / workPlusRecupTime) * 3.6 : 0;
   const recupTimeAll = gAcc.recupTime + gAcc.restSeriesTime;
   const totalSessionTime = gAcc.effortTime + gAcc.recupTime + gAcc.restSeriesTime + warmupFinalTime;
+  const sessionSecondsRemaining = Math.max(0, totalPlannedSeconds - totalSessionTime);
 
   // Vitesse/%.VMA moyens réellement atteints en récupération (inter-répétitions)
   const recupAvgSpeed = gAcc.recupTime > 0 ? (gAcc.recupDist / gAcc.recupTime) * 3.6 : 0;
@@ -641,6 +837,31 @@ export default function FractionneGPS() {
 
   return (
     <div className="min-h-screen w-full bg-slate-950 text-slate-100 flex flex-col items-center px-4 py-6 font-sans">
+      {resumeSnapshot && (
+        <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center px-6">
+          <div className="w-full max-w-xs bg-slate-900 border border-slate-700 rounded-2xl p-5 flex flex-col items-center gap-4">
+            <TimerIcon size={24} className="text-orange-400" />
+            <p className="text-sm text-slate-200 text-center">
+              Une séance a été interrompue (écran éteint ou appli fermée). Veux-tu la reprendre là où tu t'étais arrêté ?
+            </p>
+            <div className="flex w-full gap-2">
+              <button
+                onClick={discardSnapshot}
+                className="flex-1 py-2 rounded-lg text-sm font-semibold bg-slate-800 text-slate-200"
+              >
+                Ignorer
+              </button>
+              <button
+                onClick={resumeFromSnapshot}
+                className="flex-1 py-2 rounded-lg text-sm font-semibold bg-orange-500 text-slate-950"
+              >
+                Reprendre
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="w-full max-w-md flex items-center justify-between mb-6">
         <div>
           <h1 className="text-lg font-bold tracking-tight text-slate-100">Fractionné GPS Pro</h1>
@@ -701,8 +922,8 @@ export default function FractionneGPS() {
                 <div><dt className="inline text-slate-500">Séries : </dt><dd className="inline">{p.config.series}</dd></div>
                 <div><dt className="inline text-slate-500">Pause entre séries : </dt><dd className="inline">{p.config.restSeriesSec > 0 ? `${p.config.restSeriesSec} s` : "aucune"}</dd></div>
                 <div><dt className="inline text-slate-500">Latence départ : </dt><dd className="inline">{p.config.startLatencySec > 0 ? `${p.config.startLatencySec} s` : "aucune"}</dd></div>
-                <div><dt className="inline text-slate-500">Échauffement : </dt><dd className="inline">{p.config.warmupSec > 0 ? `${p.config.warmupSec} s` : "aucun"}</dd></div>
-                <div><dt className="inline text-slate-500">Récup finale : </dt><dd className="inline">{p.config.finalRecupSec > 0 ? `${p.config.finalRecupSec} s` : "aucune"}</dd></div>
+                <div><dt className="inline text-slate-500">Échauffement : </dt><dd className="inline">{p.config.warmupSec > 0 ? fmtTime(p.config.warmupSec) : "aucun"}</dd></div>
+                <div><dt className="inline text-slate-500">Récup finale : </dt><dd className="inline">{p.config.finalRecupSec > 0 ? fmtTime(p.config.finalRecupSec) : "aucune"}</dd></div>
               </dl>
               <button
                 onClick={() => loadPresetConfig(p)}
@@ -928,6 +1149,9 @@ export default function FractionneGPS() {
                 full
               />
             </div>
+            <p className="text-xs text-slate-500 -mt-2">
+              Soit {fmtTime(warmupSec)} d'échauffement et {fmtTime(finalRecupSec)} de récup' finale.
+            </p>
             <p className="text-xs text-slate-500">
               La latence correspond à la phase d'accélération au départ arrêté : pendant ce délai, choisi par le coureur, aucun bip de régulation ne retentit. Échauffement et récup' finale peuvent être laissés à 0.
             </p>
@@ -971,6 +1195,25 @@ export default function FractionneGPS() {
             <span className="text-6xl font-mono font-bold mt-2 tabular-nums">{fmtTime(run.secondsLeft)}</span>
           </div>
 
+          {/* Compteurs permanents : distance depuis le début de la séance, distance de travail
+              uniquement, et temps restant global — visibles sur toutes les phases. */}
+          {run.phase !== "finished" && (
+            <div className="w-full grid grid-cols-3 gap-2">
+              <div className="bg-slate-900 rounded-xl border border-slate-800 p-3 flex flex-col items-center">
+                <span className="text-[10px] uppercase tracking-wide text-slate-500 text-center">Distance séance</span>
+                <span className="text-lg font-mono font-bold mt-1 tabular-nums">{fmtDistance(totalDistanceAll)}</span>
+              </div>
+              <div className="bg-slate-900 rounded-xl border border-slate-800 p-3 flex flex-col items-center">
+                <span className="text-[10px] uppercase tracking-wide text-slate-500 text-center">Distance travail</span>
+                <span className="text-lg font-mono font-bold mt-1 tabular-nums text-orange-400">{fmtDistance(workDistance)}</span>
+              </div>
+              <div className="bg-slate-900 rounded-xl border border-slate-800 p-3 flex flex-col items-center">
+                <span className="text-[10px] uppercase tracking-wide text-slate-500 text-center">Reste séance</span>
+                <span className="text-lg font-mono font-bold mt-1 tabular-nums text-slate-300">{fmtTime(sessionSecondsRemaining)}</span>
+              </div>
+            </div>
+          )}
+
           {run.phase !== "finished" && (
             <>
               {(run.phase === "effort" || run.phase === "recup") && (
@@ -984,9 +1227,9 @@ export default function FractionneGPS() {
                   ) : (
                     <>
                       <svg viewBox="0 0 200 110" className="w-56">
-                        <path d="M 15 100 A 85 85 0 0 1 65 20" fill="none" stroke="#38bdf8" strokeWidth="10" strokeLinecap="round" />
-                        <path d="M 65 20 A 85 85 0 0 1 135 20" fill="none" stroke="#22c55e" strokeWidth="10" strokeLinecap="round" />
-                        <path d="M 135 20 A 85 85 0 0 1 185 100" fill="none" stroke="#f97316" strokeWidth="10" strokeLinecap="round" />
+                        <path d={`M ${gaugePoints.left.x} ${gaugePoints.left.y} A 85 85 0 0 1 ${gaugePoints.innerLeft.x} ${gaugePoints.innerLeft.y}`} fill="none" stroke="#38bdf8" strokeWidth="10" strokeLinecap="round" />
+                        <path d={`M ${gaugePoints.innerLeft.x} ${gaugePoints.innerLeft.y} A 85 85 0 0 1 ${gaugePoints.innerRight.x} ${gaugePoints.innerRight.y}`} fill="none" stroke="#22c55e" strokeWidth="10" strokeLinecap="round" />
+                        <path d={`M ${gaugePoints.innerRight.x} ${gaugePoints.innerRight.y} A 85 85 0 0 1 ${gaugePoints.right.x} ${gaugePoints.right.y}`} fill="none" stroke="#f97316" strokeWidth="10" strokeLinecap="round" />
                         <g transform={`translate(100,100) rotate(${needleAngle})`}>
                           <line x1="0" y1="0" x2="0" y2="-75" stroke="#f1f5f9" strokeWidth="3" strokeLinecap="round" />
                         </g>
@@ -994,16 +1237,16 @@ export default function FractionneGPS() {
                       </svg>
                       <div className="flex justify-between w-full mt-1 text-center">
                         <div>
-                          <p className="text-2xl font-mono font-bold">{currentSpeed.toFixed(1)}</p>
-                          <p className="text-xs text-slate-500">km/h actuelle</p>
-                          <p className="text-sm font-mono text-slate-400 mt-0.5">{allureFromKmh(currentSpeed)}</p>
-                          <p className="text-sm font-mono text-slate-400 mt-0.5">{vma > 0 ? ((currentSpeed / vma) * 100).toFixed(0) : 0}% VMA</p>
+                          <p className="text-4xl font-mono font-bold">{vma > 0 ? ((currentSpeed / vma) * 100).toFixed(0) : 0}%</p>
+                          <p className="text-xs text-slate-500">VMA instantané</p>
+                          <p className="text-lg font-mono font-semibold mt-1">{currentSpeed.toFixed(1)} km/h</p>
+                          <p className="text-xs text-slate-500">{allureFromKmh(currentSpeed)}</p>
                         </div>
                         <div>
-                          <p className={`text-2xl font-mono font-bold ${meta.color}`}>{targetSpeed?.toFixed(1)}</p>
-                          <p className="text-xs text-slate-500">km/h cible</p>
-                          <p className={`text-sm font-mono mt-0.5 ${meta.color}`}>{allureFromKmh(targetSpeed)}</p>
-                          <p className={`text-sm font-mono mt-0.5 ${meta.color}`}>{run.phase === "effort" ? effortPct : recupPct}% VMA</p>
+                          <p className={`text-4xl font-mono font-bold ${meta.color}`}>{run.phase === "effort" ? effortPct : recupPct}%</p>
+                          <p className="text-xs text-slate-500">VMA cible</p>
+                          <p className={`text-lg font-mono font-semibold mt-1 ${meta.color}`}>{targetSpeed?.toFixed(1)} km/h</p>
+                          <p className="text-xs text-slate-500">{allureFromKmh(targetSpeed)}</p>
                         </div>
                       </div>
                     </>
