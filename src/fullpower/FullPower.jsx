@@ -6,8 +6,8 @@ import {
 import { storage } from "../storage.js";
 import {
   fmtDistance, fmtDuration, fmtTime, allureFromKmh,
-  playGong, playBeep, playCountdownBeep, playGunshot, playApplause,
-  TOLERANCE_RATIO, SILENCE_CHECK_MS, speedRatio, beepIntervalMs, beepFrequency,
+  playGong, playGongStart, playGongStop, playBeep, playCountdownBeep, playGunshot, playApplause,
+  TOLERANCE_RATIO, SILENCE_CHECK_MS, speedRatio, beepIntervalMs, beepFrequency, gaugePoint,
   ZONES, classifyZone, segmentCharge, StatRow, getOrder, setOrder, applyOrder,
   useWakeLock, saveActiveSession, loadActiveSession, clearActiveSession,
 } from "../shared.jsx";
@@ -299,7 +299,7 @@ export default function FullPower({ runnerName, onToast }) {
         if (speedMs != null && speedMs >= 0) setLiveSpeed(speedMs * 3.6);
       },
       () => setGpsStatus("denied"),
-      { enableHighAccuracy: true, maximumAge: 1000, timeout: 8000 }
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 8000 }
     );
     return () => {
       if (watchIdRef.current !== null) {
@@ -340,16 +340,24 @@ export default function FullPower({ runnerName, onToast }) {
     return () => { if (beepTimeoutRef.current) clearTimeout(beepTimeoutRef.current); };
   }, [status, current.kind, qIndex, beepLoop]);
 
-  // --- Gong sur changement de phase ---
+  // --- Gong sur changement de phase : départ de run, fin de run (récup'), ou pause de série ---
   const prevKindRef = useRef(null);
   useEffect(() => {
     if (screen !== "run") { prevKindRef.current = null; return; }
     const prev = prevKindRef.current;
     if (prev !== null && prev !== current.kind) {
+      const ctx = ensureAudioCtx();
       const boundary = prev === "restSeries" || current.kind === "restSeries";
-      playGong(ensureAudioCtx(), boundary ? 2 : 1);
+      if (boundary) {
+        playGong(ctx, 2);
+      } else if (current.kind === "work") {
+        playGongStart(ctx);
+      } else if (current.kind === "recup") {
+        playGongStop(ctx);
+      } else {
+        playGong(ctx, 1);
+      }
       if (current.kind === "finished") {
-        const ctx = ensureAudioCtx();
         setTimeout(() => playApplause(ctx, 3), 400);
       }
     }
@@ -565,6 +573,11 @@ export default function FullPower({ runnerName, onToast }) {
     .reduce((sum, k) => sum + acc.current[k].time, 0);
   const totalDistanceAll = ["work", "recup", "restSeries", "warmupFinal"]
     .reduce((sum, k) => sum + acc.current[k].dist, 0);
+  const workDistanceAll = acc.current.work.dist;
+  // Durée totale planifiée = somme des durées de toutes les phases de la file (connue dès le
+  // départ, y compris en Hazardous Mode où elle est juste cachée à l'écran).
+  const totalPlannedSeconds = queue.reduce((sum, p) => sum + (p.seconds || 0), 0);
+  const sessionSecondsRemaining = Math.max(0, totalPlannedSeconds - totalSessionTime);
 
   return (
     <div className="min-h-full w-full bg-gradient-to-br from-fuchsia-950 via-purple-950 to-slate-950 text-slate-100 flex flex-col items-center px-4 py-6 gap-6">
@@ -727,6 +740,9 @@ export default function FullPower({ runnerName, onToast }) {
                   onChange={setStartLatencySec}
                   full
                 />
+                <p className="text-xs text-slate-500 col-span-2 -mt-1">
+                  Soit {fmtTime(warmupSec)} d'échauffement et {fmtTime(finalRecupSec)} de récup' finale.
+                </p>
                 <p className="text-xs text-slate-500 col-span-2">
                   La latence correspond à la phase d'accélération au départ arrêté : pendant ce délai, choisi par toi, aucun bip de régulation ne retentit. Elle s'applique sur la 1ère répétition de chaque série.
                 </p>
@@ -751,6 +767,9 @@ export default function FullPower({ runnerName, onToast }) {
                 <MiniField label="Échauffement (s)" value={hzWarmupSec} onChange={setHzWarmupSec} full />
                 <MiniField label="Temps de travail désiré (s)" value={hzWorkTotalSec} onChange={setHzWorkTotalSec} full />
                 <MiniField label="Récup' de fin de séance (s)" value={hzFinalRecupSec} onChange={setHzFinalRecupSec} full />
+                <p className="text-xs text-slate-500">
+                  Soit {fmtTime(hzWarmupSec)} d'échauffement, {fmtTime(hzWorkTotalSec)} de travail et {fmtTime(hzFinalRecupSec)} de récup' finale.
+                </p>
                 <div className="pt-2 border-t border-slate-800 flex justify-between text-sm">
                   <span className="text-slate-400">Temps total estimé</span>
                   <span className="font-mono font-semibold text-purple-300">
@@ -903,6 +922,26 @@ export default function FullPower({ runnerName, onToast }) {
             </div>
           )}
 
+          {/* Compteurs permanents : distance depuis le début de la séance, distance de travail
+              uniquement, et temps restant global — visibles sur toutes les phases, y compris
+              en Hazardous Mode (ça ne révèle pas la structure cachée de la séance). */}
+          {current.kind !== "finished" && (
+            <div className="w-full grid grid-cols-3 gap-2">
+              <div className="bg-slate-900/70 rounded-xl border border-fuchsia-500/20 p-3 flex flex-col items-center">
+                <span className="text-[10px] uppercase tracking-wide text-slate-500 text-center">Distance séance</span>
+                <span className="text-lg font-mono font-bold mt-1 tabular-nums">{fmtDistance(totalDistanceAll)}</span>
+              </div>
+              <div className="bg-slate-900/70 rounded-xl border border-fuchsia-500/20 p-3 flex flex-col items-center">
+                <span className="text-[10px] uppercase tracking-wide text-slate-500 text-center">Distance travail</span>
+                <span className="text-lg font-mono font-bold mt-1 tabular-nums text-fuchsia-300">{fmtDistance(workDistanceAll)}</span>
+              </div>
+              <div className="bg-slate-900/70 rounded-xl border border-fuchsia-500/20 p-3 flex flex-col items-center">
+                <span className="text-[10px] uppercase tracking-wide text-slate-500 text-center">Reste séance</span>
+                <span className="text-lg font-mono font-bold mt-1 tabular-nums text-slate-300">{fmtTime(sessionSecondsRemaining)}</span>
+              </div>
+            </div>
+          )}
+
           {current.kind !== "finished" && (current.kind === "work" || current.kind === "recup") && inLatency ? (
             <div className="w-full bg-slate-900/70 rounded-2xl border border-fuchsia-500/20 p-4 flex flex-col items-center">
               <div className="py-6 text-center">
@@ -916,19 +955,19 @@ export default function FullPower({ runnerName, onToast }) {
               <NeedleGauge currentSpeed={simMode ? simSpeed : liveSpeed} targetSpeed={targetSpeed} />
               <div className="flex justify-between w-full mt-1 text-center">
                 <div>
-                  <p className="text-2xl font-mono font-bold">{(simMode ? simSpeed : liveSpeed).toFixed(1)}</p>
-                  <p className="text-xs text-slate-500">km/h actuelle</p>
-                  <p className="text-sm font-mono text-slate-400 mt-0.5">{allureFromKmh(simMode ? simSpeed : liveSpeed)}</p>
-                  <p className="text-sm font-mono text-slate-400 mt-0.5">{vma > 0 ? (((simMode ? simSpeed : liveSpeed) / vma) * 100).toFixed(0) : 0}% VMA</p>
+                  <p className="text-4xl font-mono font-bold">{vma > 0 ? (((simMode ? simSpeed : liveSpeed) / vma) * 100).toFixed(0) : 0}%</p>
+                  <p className="text-xs text-slate-500">VMA instantané</p>
+                  <p className="text-lg font-mono font-semibold mt-1">{(simMode ? simSpeed : liveSpeed).toFixed(1)} km/h</p>
+                  <p className="text-xs text-slate-500">{allureFromKmh(simMode ? simSpeed : liveSpeed)}</p>
                 </div>
-                {!isHazardous && (
-                  <div>
-                    <p className="text-2xl font-mono font-bold text-fuchsia-300">{targetSpeed.toFixed(1)}</p>
-                    <p className="text-xs text-slate-500">km/h cible</p>
-                    <p className="text-sm font-mono text-fuchsia-300 mt-0.5">{allureFromKmh(targetSpeed)}</p>
-                    <p className="text-sm font-mono text-fuchsia-300 mt-0.5">{current.pct}% VMA</p>
-                  </div>
-                )}
+                {/* %VMA cible affiché même en Hazardous Mode : c'est l'objectif de la phase
+                    en cours, pas une info sur la suite de la séance — la surprise reste intacte. */}
+                <div>
+                  <p className="text-4xl font-mono font-bold text-fuchsia-300">{current.pct}%</p>
+                  <p className="text-xs text-slate-500">VMA cible</p>
+                  <p className="text-lg font-mono font-semibold mt-1 text-fuchsia-300">{targetSpeed.toFixed(1)} km/h</p>
+                  <p className="text-xs text-slate-500">{allureFromKmh(targetSpeed)}</p>
+                </div>
               </div>
               <p className="text-xs text-slate-500 mt-2 flex items-center gap-1">
                 {simMode ? <Sliders size={12} /> : gpsStatus === "active" ? <MapPin size={12} className="text-emerald-400" /> : <MapPinOff size={12} className="text-rose-400" />}
@@ -1037,13 +1076,22 @@ export default function FullPower({ runnerName, onToast }) {
 }
 
 function NeedleGauge({ currentSpeed, targetSpeed }) {
-  const maxScale = 25;
-  const angle = -90 + (Math.min(currentSpeed, maxScale) / maxScale) * 180;
+  // Aiguille relative à la cible (0.5x à 1.5x), même logique que le mode Simple : la zone
+  // verte (silence) est calée exactement sur la tolérance réelle des bips (±TOLERANCE_RATIO),
+  // pour que l'aiguille entre dans le vert pile quand les bips s'arrêtent.
+  const ratio = targetSpeed > 0 ? currentSpeed / targetSpeed : 1;
+  const clamped = Math.max(0.5, Math.min(1.5, ratio));
+  const angle = (clamped - 1) * 180;
+  const toleranceAngle = TOLERANCE_RATIO * 180;
+  const left = gaugePoint(-90);
+  const innerLeft = gaugePoint(-toleranceAngle);
+  const innerRight = gaugePoint(toleranceAngle);
+  const right = gaugePoint(90);
   return (
     <svg viewBox="0 0 200 110" className="w-56">
-      <path d="M 15 100 A 85 85 0 0 1 65 20" fill="none" stroke="#c026d3" strokeWidth="10" strokeLinecap="round" />
-      <path d="M 65 20 A 85 85 0 0 1 135 20" fill="none" stroke="#a855f7" strokeWidth="10" strokeLinecap="round" />
-      <path d="M 135 20 A 85 85 0 0 1 185 100" fill="none" stroke="#ec4899" strokeWidth="10" strokeLinecap="round" />
+      <path d={`M ${left.x} ${left.y} A 85 85 0 0 1 ${innerLeft.x} ${innerLeft.y}`} fill="none" stroke="#c026d3" strokeWidth="10" strokeLinecap="round" />
+      <path d={`M ${innerLeft.x} ${innerLeft.y} A 85 85 0 0 1 ${innerRight.x} ${innerRight.y}`} fill="none" stroke="#22c55e" strokeWidth="10" strokeLinecap="round" />
+      <path d={`M ${innerRight.x} ${innerRight.y} A 85 85 0 0 1 ${right.x} ${right.y}`} fill="none" stroke="#ec4899" strokeWidth="10" strokeLinecap="round" />
       <g transform={`translate(100,100) rotate(${angle})`}>
         <line x1="0" y1="0" x2="0" y2="-75" stroke="#f5d0fe" strokeWidth="3" strokeLinecap="round" />
       </g>
