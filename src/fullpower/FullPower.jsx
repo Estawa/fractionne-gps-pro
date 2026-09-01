@@ -56,6 +56,20 @@ export default function FullPower({ runnerName, onToast }) {
   const [finalRecupSec, setFinalRecupSec] = useState(180);
   const [startLatencySec, setStartLatencySec] = useState(4);
 
+  const manualEstimatedTotalSec = useMemo(() => {
+    try {
+      const queue = buildManualQueue({
+        repTypes, seriesList, globalRepeatCount,
+        warmupSec: Number(warmupSec) || 0,
+        finalRecupSec: Number(finalRecupSec) || 0,
+        startLatencySec: Number(startLatencySec) || 0,
+      });
+      return queue.reduce((acc, p) => acc + (p.seconds || 0), 0);
+    } catch {
+      return 0;
+    }
+  }, [repTypes, seriesList, globalRepeatCount, warmupSec, finalRecupSec, startLatencySec]);
+
   // --- Config Hazardous ---
   const [hzWarmupSec, setHzWarmupSec] = useState(300);
   const [hzWorkTotalSec, setHzWorkTotalSec] = useState(1200);
@@ -713,6 +727,15 @@ export default function FullPower({ runnerName, onToast }) {
 
       {screen === "config" && (
         <div className="w-full max-w-md space-y-5">
+          <div className="sticky top-0 z-10 bg-fuchsia-500/10 border border-fuchsia-500/40 rounded-2xl px-4 py-3 flex items-center justify-between backdrop-blur">
+            <span className="text-xs uppercase tracking-wide text-fuchsia-300 flex items-center gap-1.5">
+              <Sliders size={14} /> Durée totale estimée
+            </span>
+            <span className="font-mono font-bold text-lg text-fuchsia-300 tabular-nums">
+              {fmtDuration(configMode === "manual" ? manualEstimatedTotalSec : (Number(hzWarmupSec) || 0) + (Number(hzWorkTotalSec) || 0) + (Number(hzFinalRecupSec) || 0))}
+            </span>
+          </div>
+
           <div className="flex bg-slate-900/60 rounded-xl p-1 border border-fuchsia-500/30">
             <button
               onClick={() => setConfigMode("manual")}
@@ -871,12 +894,6 @@ export default function FullPower({ runnerName, onToast }) {
                 <p className="text-xs text-slate-500">
                   Soit {fmtTime(hzWarmupSec)} d'échauffement, {fmtTime(hzWorkTotalSec)} de travail et {fmtTime(hzFinalRecupSec)} de récup' finale.
                 </p>
-                <div className="pt-2 border-t border-slate-800 flex justify-between text-sm">
-                  <span className="text-slate-400">Temps total estimé</span>
-                  <span className="font-mono font-semibold text-purple-300">
-                    {fmtDuration(hzWarmupSec + hzWorkTotalSec + hzFinalRecupSec)}
-                  </span>
-                </div>
               </div>
 
               <SimToggle simMode={simMode} setSimMode={setSimMode} />
