@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Play, Pause, Square, MapPin, MapPinOff, Sliders, RotateCcw, Save, Check,
-  Plus, Trash2, ArrowLeft, BookOpen, Zap, Shuffle, ChevronRight, ChevronUp, ChevronDown
+  Plus, Trash2, ArrowLeft, BookOpen, Zap, Shuffle, ChevronRight, ChevronUp, ChevronDown,
+  Download, Upload
 } from "lucide-react";
 import { storage } from "../storage.js";
 import {
@@ -10,6 +11,7 @@ import {
   TOLERANCE_RATIO, SILENCE_CHECK_MS, speedRatio, beepIntervalMs, beepFrequency, gaugePoint,
   ZONES, classifyZone, segmentCharge, StatRow, getOrder, setOrder, applyOrder,
   useWakeLock, saveActiveSession, loadActiveSession, clearActiveSession,
+  APP_VERSION, exportSessionToFile, readSessionFile,
 } from "../shared.jsx";
 import { buildManualQueue, generateHazardousQueue } from "./engine.js";
 import { pickText } from "./personalization.js";
@@ -63,6 +65,10 @@ export default function FullPower({ runnerName, onToast }) {
   const [library, setLibrary] = useState([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryDetail, setLibraryDetail] = useState(null);
+  const [importStatus, setImportStatus] = useState(null); // null | "error-format" | "error-kind" | "error"
+  const importInputRef = useRef(null);
+  const [prepTitle, setPrepTitle] = useState("");
+  const [prepStatus, setPrepStatus] = useState("idle"); // idle | saving | saved | error
 
   // --- Course ---
   const [queue, setQueue] = useState([]);
@@ -441,6 +447,52 @@ export default function FullPower({ runnerName, onToast }) {
     setStatus("paused");
   }
 
+  // Sauvegarde la configuration en cours dans la bibliothèque, sans la lancer,
+  // pour pouvoir la reprendre et la réaliser un autre jour (via "Refaire cette séance").
+  async function savePreparedSession() {
+    setPrepStatus("saving");
+    try {
+      let q, mode, config;
+      if (configMode === "manual") {
+        const activeTypes = repTypes.filter(rt => rt.enabled);
+        const validSeries = seriesList
+          .map(s => ({ ...s, blocks: s.blocks.filter(b => activeTypes.some(rt => rt.id === b.repTypeId)) }))
+          .filter(s => s.blocks.length > 0);
+        if (activeTypes.length === 0 || validSeries.length === 0) { setPrepStatus("error"); return; }
+        q = buildManualQueue({
+          repTypes: activeTypes, seriesList: validSeries,
+          globalRepeatCount, warmupSec, finalRecupSec, startLatencySec,
+        });
+        mode = "manual";
+        config = { repTypes: activeTypes, seriesList, globalRepeatCount, warmupSec, finalRecupSec, startLatencySec };
+      } else {
+        q = generateHazardousQueue({
+          warmupSec: hzWarmupSec, workTotalSec: hzWorkTotalSec, finalRecupSec: hzFinalRecupSec,
+        });
+        mode = "hazardous";
+        config = { warmupSec: hzWarmupSec, workTotalSec: hzWorkTotalSec, finalRecupSec: hzFinalRecupSec };
+      }
+      const id = `fp-${Date.now()}`;
+      const payload = {
+        id,
+        title: prepTitle.trim() || (mode === "hazardous" ? "Séance Hazardous préparée" : "Séance Full Power préparée"),
+        mode,
+        savedAt: Date.now(),
+        date: new Date().toISOString().slice(0, 10),
+        comment: "",
+        vma,
+        queue: q,
+        config,
+        totals: null, // pas encore réalisée
+      };
+      const res = await storage.set(`fullpower-sessions:${id}`, JSON.stringify(payload));
+      setPrepStatus(res ? "saved" : "error");
+      if (res) setPrepTitle("");
+    } catch {
+      setPrepStatus("error");
+    }
+  }
+
   useEffect(() => {
     if (rocketCount === null) return;
     if (rocketCount === 0) {
@@ -535,6 +587,36 @@ export default function FullPower({ runnerName, onToast }) {
     loadLibrary();
   }
 
+  function exportLibrarySession(saved) {
+    exportSessionToFile(saved, "fractionne-gps-pro-fullpower");
+  }
+
+  function triggerImport() {
+    setImportStatus(null);
+    importInputRef.current?.click();
+  }
+
+  async function handleImportFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      const parsed = await readSessionFile(file);
+      if (parsed.exportKind !== "fractionne-gps-pro-fullpower") {
+        setImportStatus("error-kind");
+        return;
+      }
+      const saved = parsed.session;
+      const id = `fp-${Date.now()}`;
+      const payload = { ...saved, id, savedAt: Date.now() };
+      await storage.set(`fullpower-sessions:${id}`, JSON.stringify(payload));
+      setImportStatus(null);
+      await loadLibrary();
+    } catch {
+      setImportStatus("error-format");
+    }
+  }
+
   function openLibraryDetail(saved) {
     setLibraryDetail(saved);
     setScreen("libraryDetail");
@@ -612,6 +694,7 @@ export default function FullPower({ runnerName, onToast }) {
           <h1 className="text-lg font-bold tracking-tight bg-gradient-to-r from-fuchsia-400 to-purple-300 bg-clip-text text-transparent">
             Full Power
           </h1>
+          <span className="text-[9px] font-normal text-slate-600">v{APP_VERSION}</span>
         </div>
         {screen !== "config" && screen !== "run" && (
           <button
@@ -750,6 +833,24 @@ export default function FullPower({ runnerName, onToast }) {
 
               <SimToggle simMode={simMode} setSimMode={setSimMode} />
 
+              <div className="bg-slate-900/70 rounded-2xl p-3 border border-slate-800 space-y-2">
+                <input
+                  type="text" value={prepTitle} onChange={e => { setPrepTitle(e.target.value); setPrepStatus("idle"); }}
+                  placeholder="Titre (optionnel)"
+                  className="w-full bg-slate-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-fuchsia-500"
+                />
+                <button
+                  onClick={savePreparedSession}
+                  disabled={prepStatus === "saving"}
+                  className="w-full bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-slate-200 text-sm font-semibold rounded-xl py-2 flex items-center justify-center gap-2"
+                >
+                  {prepStatus === "saved" ? <><Check size={16} /> Séance sauvegardée</> : <><Save size={16} /> Sauvegarder pour plus tard</>}
+                </button>
+                {prepStatus === "error" && (
+                  <p className="text-xs text-rose-400">Vérifie ta configuration (au moins un type de répétition actif dans une série), ou réessaie.</p>
+                )}
+              </div>
+
               <button
                 onClick={startManualSession}
                 className="w-full bg-gradient-to-r from-fuchsia-600 to-purple-600 hover:opacity-90 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2"
@@ -780,6 +881,24 @@ export default function FullPower({ runnerName, onToast }) {
 
               <SimToggle simMode={simMode} setSimMode={setSimMode} />
 
+              <div className="bg-slate-900/70 rounded-2xl p-3 border border-purple-500/30 space-y-2">
+                <input
+                  type="text" value={prepTitle} onChange={e => { setPrepTitle(e.target.value); setPrepStatus("idle"); }}
+                  placeholder="Titre (optionnel)"
+                  className="w-full bg-slate-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-500"
+                />
+                <button
+                  onClick={savePreparedSession}
+                  disabled={prepStatus === "saving"}
+                  className="w-full bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-slate-200 text-sm font-semibold rounded-xl py-2 flex items-center justify-center gap-2"
+                >
+                  {prepStatus === "saved" ? <><Check size={16} /> Séance sauvegardée</> : <><Save size={16} /> Sauvegarder pour plus tard</>}
+                </button>
+                {prepStatus === "error" && (
+                  <p className="text-xs text-rose-400">L'enregistrement a échoué, réessaie.</p>
+                )}
+              </div>
+
               <button
                 onClick={startHazardousSession}
                 className="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:opacity-90 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2"
@@ -793,6 +912,28 @@ export default function FullPower({ runnerName, onToast }) {
 
       {screen === "library" && (
         <div className="w-full max-w-md space-y-3">
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json"
+            className="hidden"
+            onChange={handleImportFile}
+          />
+          <button
+            onClick={triggerImport}
+            className="w-full flex items-center justify-center gap-2 bg-fuchsia-500/10 border border-fuchsia-500/40 text-fuchsia-300 text-sm font-semibold rounded-xl py-2.5"
+          >
+            <Upload size={16} /> Importer
+          </button>
+          {importStatus === "error-format" && (
+            <p className="text-xs text-rose-400 text-center">Fichier illisible ou invalide.</p>
+          )}
+          {importStatus === "error-kind" && (
+            <p className="text-xs text-rose-400 text-center">Ce fichier vient du mode Simple, pas du mode Full Power.</p>
+          )}
+          {importStatus === "error" && (
+            <p className="text-xs text-rose-400 text-center">Impossible d'enregistrer la séance importée.</p>
+          )}
           {libraryLoading && <p className="text-sm text-slate-500 text-center">Chargement...</p>}
           {!libraryLoading && library.length === 0 && (
             <p className="text-sm text-slate-500 text-center">Aucune séance Full Power enregistrée.</p>
@@ -812,6 +953,9 @@ export default function FullPower({ runnerName, onToast }) {
                   <button onClick={() => moveLibraryItem(s.id, 1)} disabled={idx === library.length - 1}
                     className="text-slate-500 hover:text-slate-200 disabled:opacity-30">
                     <ChevronDown size={16} />
+                  </button>
+                  <button onClick={() => exportLibrarySession(s)} className="text-slate-500 hover:text-sky-400">
+                    <Download size={16} />
                   </button>
                   <button onClick={() => deleteLibraryItem(s.id)} className="text-slate-500 hover:text-rose-400">
                     <Trash2 size={16} />
@@ -877,12 +1021,20 @@ export default function FullPower({ runnerName, onToast }) {
               </div>
             )}
 
-            <button
-              onClick={() => replaySavedSession(libraryDetail)}
-              className="w-full bg-gradient-to-r from-fuchsia-600 to-purple-600 hover:opacity-90 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2"
-            >
-              <RotateCcw size={18} /> Refaire cette séance
-            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={() => replaySavedSession(libraryDetail)}
+                className="flex-1 bg-gradient-to-r from-fuchsia-600 to-purple-600 hover:opacity-90 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2"
+              >
+                <RotateCcw size={18} /> Refaire cette séance
+              </button>
+              <button
+                onClick={() => exportLibrarySession(libraryDetail)}
+                className="bg-slate-800 text-sky-400 rounded-xl px-4 flex items-center justify-center text-sm"
+              >
+                <Download size={18} />
+              </button>
+            </div>
           </div>
         </div>
       )}
