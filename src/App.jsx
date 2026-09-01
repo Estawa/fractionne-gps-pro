@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { Zap, Power } from "lucide-react";
+import { Zap, Power, Share2, Copy, Check, X } from "lucide-react";
 import FractionneGPS from "./FractionneGPS.jsx";
 import FullPower from "./fullpower/FullPower.jsx";
 import { getRunnerName, setRunnerName, pickText } from "./fullpower/personalization.js";
+
+const APP_URL = "https://fractionne-gps-pro.vercel.app";
 
 export default function App() {
   const [mode, setMode] = useState("simple"); // simple | fullpower
@@ -14,6 +16,39 @@ export default function App() {
   const openToastFiredRef = useRef(false);
   const [showOffConfirm, setShowOffConfirm] = useState(false);
   const [poweredOff, setPoweredOff] = useState(false);
+  const [showShare, setShowShare] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  // URL réelle de l'appli telle que déployée (utile si un jour hébergée ailleurs que APP_URL).
+  const shareUrl = typeof window !== "undefined" && window.location.origin.startsWith("http")
+    ? window.location.origin
+    : APP_URL;
+  const shareText = "Fractionné GPS Pro — mon appli de séances de fractionné guidées par GPS";
+
+  function openShare() { setCopied(false); setShowShare(true); }
+
+  async function copyShareLink() {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch { /* presse-papiers indisponible, tant pis */ }
+  }
+
+  function shareViaWhatsApp() {
+    window.open(`https://wa.me/?text=${encodeURIComponent(shareText + " : " + shareUrl)}`, "_blank");
+  }
+
+  function shareViaEmail() {
+    window.location.href = `mailto:?subject=${encodeURIComponent("Fractionné GPS Pro")}&body=${encodeURIComponent(shareText + "\n\n" + shareUrl)}`;
+  }
+
+  async function shareViaSystem() {
+    if (navigator.share) {
+      try { await navigator.share({ title: "Fractionné GPS Pro", text: shareText, url: shareUrl }); }
+      catch { /* annulé par l'utilisateur, rien à faire */ }
+    }
+  }
 
   useEffect(() => {
     (async () => {
@@ -124,6 +159,13 @@ export default function App() {
             <Zap size={14} /> Full Power
           </button>
           <button
+            onClick={openShare}
+            aria-label="Partager l'application"
+            className="p-2 rounded-lg text-slate-500 hover:text-sky-400 hover:bg-slate-800/60"
+          >
+            <Share2 size={18} />
+          </button>
+          <button
             onClick={requestPowerOff}
             aria-label="Éteindre l'application"
             className="p-2 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-800/60"
@@ -138,6 +180,64 @@ export default function App() {
       {toast && (
         <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 max-w-[90%] bg-slate-900/95 border border-fuchsia-500/40 text-slate-100 text-sm font-medium px-4 py-3 rounded-xl shadow-lg shadow-fuchsia-900/40 text-center">
           {toast}
+        </div>
+      )}
+
+      {showShare && (
+        <div className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center px-6">
+          <div className="w-full max-w-xs bg-slate-900 border border-slate-700 rounded-2xl p-5 flex flex-col items-center gap-4 relative">
+            <button
+              onClick={() => setShowShare(false)}
+              aria-label="Fermer"
+              className="absolute top-3 right-3 text-slate-500 hover:text-slate-200"
+            >
+              <X size={18} />
+            </button>
+            <Share2 size={22} className="text-sky-400" />
+            <p className="text-sm font-semibold text-slate-100 text-center">Partager Fractionné GPS Pro</p>
+
+            <img
+              src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(shareUrl)}`}
+              alt="QR code de l'application"
+              width={160}
+              height={160}
+              className="rounded-lg bg-white p-2"
+            />
+            <p className="text-[11px] text-slate-500 text-center -mt-2">
+              Le flashcode est généré via un service externe (api.qrserver.com), à qui seule l'adresse de l'appli est transmise.
+            </p>
+
+            <div className="w-full flex items-center gap-2 bg-slate-800 rounded-lg px-3 py-2">
+              <p className="text-xs text-slate-300 truncate flex-1">{shareUrl}</p>
+              <button onClick={copyShareLink} className="text-slate-400 hover:text-slate-100 shrink-0">
+                {copied ? <Check size={16} className="text-emerald-400" /> : <Copy size={16} />}
+              </button>
+            </div>
+
+            <div className="w-full grid grid-cols-2 gap-2">
+              <button
+                onClick={shareViaWhatsApp}
+                className="py-2 rounded-lg text-sm font-semibold bg-emerald-600 hover:bg-emerald-500 text-white"
+              >
+                WhatsApp
+              </button>
+              <button
+                onClick={shareViaEmail}
+                className="py-2 rounded-lg text-sm font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200"
+              >
+                E-mail
+              </button>
+            </div>
+
+            {typeof navigator !== "undefined" && navigator.share && (
+              <button
+                onClick={shareViaSystem}
+                className="w-full py-2 rounded-lg text-sm font-semibold bg-sky-600 hover:bg-sky-500 text-white flex items-center justify-center gap-2"
+              >
+                <Share2 size={16} /> Autre application...
+              </button>
+            )}
+          </div>
         </div>
       )}
 

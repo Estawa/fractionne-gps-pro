@@ -2,13 +2,15 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Play, Pause, Square, Settings2, MapPin, MapPinOff,
   Zap, Wind, Timer as TimerIcon, ChevronRight, RotateCcw, Sliders,
-  BookOpen, Save, Trash2, ArrowLeft, Check, ChevronUp, ChevronDown
+  BookOpen, Save, Trash2, ArrowLeft, Check, ChevronUp, ChevronDown,
+  Download, Upload
 } from "lucide-react";
 import { storage } from "./storage.js";
 import { PRESETS } from "./presets.js";
 import {
   playApplause, getOrder, setOrder, applyOrder,
   useWakeLock, saveActiveSession, loadActiveSession, clearActiveSession,
+  APP_VERSION, exportSessionToFile, readSessionFile,
 } from "./shared.jsx";
 
 const ACTIVE_SESSION_KEY = "activeSession-simple";
@@ -258,6 +260,10 @@ export default function FractionneGPS() {
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryError, setLibraryError] = useState(false);
   const [libraryDetail, setLibraryDetail] = useState(null);
+  const [importStatus, setImportStatus] = useState(null); // null | "error-format" | "error-kind" | "error"
+  const importInputRef = useRef(null);
+  const [prepTitle, setPrepTitle] = useState("");
+  const [prepStatus, setPrepStatus] = useState("idle"); // idle | saving | saved | error
   const pendingReplayRef = useRef(false);
 
   // --- Enregistrement de la séance terminée ---
@@ -694,6 +700,60 @@ export default function FractionneGPS() {
     loadLibrary();
   }
 
+  function exportLibrarySession(saved) {
+    exportSessionToFile(saved, "fractionne-gps-pro-simple");
+  }
+
+  // Sauvegarde la configuration en cours dans la bibliothèque, sans la lancer,
+  // pour pouvoir la reprendre et la réaliser un autre jour (via "Refaire cette séance").
+  async function savePreparedSession() {
+    setPrepStatus("saving");
+    const id = `sessions:${Date.now()}`;
+    const payload = {
+      id,
+      title: prepTitle.trim() || "Séance préparée",
+      date: new Date().toISOString().slice(0, 10),
+      observation: "",
+      savedAt: Date.now(),
+      config: cfg,
+      recap: null, // pas encore réalisée
+    };
+    try {
+      const res = await storage.set(id, JSON.stringify(payload));
+      setPrepStatus(res ? "saved" : "error");
+      if (res) { setPrepTitle(""); loadLibrary(); }
+    } catch (e) {
+      setPrepStatus("error");
+    }
+  }
+
+  function triggerImport() {
+    setImportStatus(null);
+    importInputRef.current?.click();
+  }
+
+  async function handleImportFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // permet de réimporter le même fichier plus tard si besoin
+    if (!file) return;
+    try {
+      const parsed = await readSessionFile(file);
+      if (parsed.exportKind !== "fractionne-gps-pro-simple") {
+        setImportStatus("error-kind");
+        return;
+      }
+      const saved = parsed.session;
+      const id = `sessions:${Date.now()}`;
+      const payload = { ...saved, id, savedAt: Date.now() };
+      const res = await storage.set(id, JSON.stringify(payload));
+      if (!res) { setImportStatus("error"); return; }
+      setImportStatus(null);
+      await loadLibrary();
+    } catch (err) {
+      setImportStatus("error-format");
+    }
+  }
+
   async function saveSession() {
     setSaveStatus("saving");
     const id = `sessions:${Date.now()}`;
@@ -864,7 +924,10 @@ export default function FractionneGPS() {
 
       <header className="w-full max-w-md flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-lg font-bold tracking-tight text-slate-100">Fractionné GPS Pro</h1>
+          <h1 className="text-lg font-bold tracking-tight text-slate-100">
+            Fractionné GPS Pro
+            <span className="ml-1.5 text-[9px] font-normal text-slate-600 align-super">v{APP_VERSION}</span>
+          </h1>
           <p className="text-xs text-slate-500">by C. Guilhem</p>
         </div>
         {screen === "run" && (
@@ -938,12 +1001,36 @@ export default function FractionneGPS() {
 
       {screen === "library" && (
         <div className="w-full max-w-md space-y-6">
-          <button
-            onClick={() => setScreen("presets")}
-            className="w-full flex items-center justify-center gap-2 bg-orange-500/10 border border-orange-500/40 text-orange-400 text-sm font-semibold rounded-xl py-2.5"
-          >
-            <Zap size={16} /> Presets
-          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json"
+            className="hidden"
+            onChange={handleImportFile}
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={() => setScreen("presets")}
+              className="flex-1 flex items-center justify-center gap-2 bg-orange-500/10 border border-orange-500/40 text-orange-400 text-sm font-semibold rounded-xl py-2.5"
+            >
+              <Zap size={16} /> Presets
+            </button>
+            <button
+              onClick={triggerImport}
+              className="flex-1 flex items-center justify-center gap-2 bg-sky-500/10 border border-sky-500/40 text-sky-400 text-sm font-semibold rounded-xl py-2.5"
+            >
+              <Upload size={16} /> Importer
+            </button>
+          </div>
+          {importStatus === "error-format" && (
+            <p className="text-xs text-rose-400 text-center -mt-3">Fichier illisible ou invalide.</p>
+          )}
+          {importStatus === "error-kind" && (
+            <p className="text-xs text-rose-400 text-center -mt-3">Ce fichier vient du mode Full Power, pas du mode Simple.</p>
+          )}
+          {importStatus === "error" && (
+            <p className="text-xs text-rose-400 text-center -mt-3">Impossible d'enregistrer la séance importée.</p>
+          )}
 
           <div className="space-y-3">
             <p className="text-xs uppercase tracking-wide text-slate-500 flex items-center gap-1.5">
@@ -973,6 +1060,9 @@ export default function FractionneGPS() {
                   <button onClick={() => moveLibraryItem(s.id, 1)} disabled={idx === library.length - 1}
                     className="text-slate-500 hover:text-slate-200 disabled:opacity-30">
                     <ChevronDown size={16} />
+                  </button>
+                  <button onClick={() => exportLibrarySession(s)} className="text-slate-500 hover:text-sky-400 ml-1">
+                    <Download size={16} />
                   </button>
                   <button onClick={() => deleteSession(s.id)} className="text-slate-500 hover:text-rose-400 ml-1">
                     <Trash2 size={16} />
@@ -1073,6 +1163,12 @@ export default function FractionneGPS() {
               >
                 Modifier
               </button>
+              <button
+                onClick={() => exportLibrarySession(libraryDetail)}
+                className="bg-slate-800 text-sky-400 rounded-xl px-4 flex items-center justify-center text-sm"
+              >
+                <Download size={18} />
+              </button>
             </div>
           </div>
         </div>
@@ -1163,6 +1259,24 @@ export default function FractionneGPS() {
               Mode simulation (sans GPS, pour tester)
             </label>
             <p className="text-xs text-slate-500 mt-1">À activer si le GPS n'est pas disponible dans cet aperçu.</p>
+          </div>
+
+          <div className="bg-slate-900 rounded-2xl p-3 border border-slate-800 space-y-2">
+            <input
+              type="text" value={prepTitle} onChange={e => { setPrepTitle(e.target.value); setPrepStatus("idle"); }}
+              placeholder="Titre (optionnel)"
+              className="w-full bg-slate-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-500"
+            />
+            <button
+              onClick={savePreparedSession}
+              disabled={prepStatus === "saving"}
+              className="w-full bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-slate-200 text-sm font-semibold rounded-xl py-2 flex items-center justify-center gap-2"
+            >
+              {prepStatus === "saved" ? <><Check size={16} /> Séance sauvegardée</> : <><Save size={16} /> Sauvegarder pour plus tard</>}
+            </button>
+            {prepStatus === "error" && (
+              <p className="text-xs text-rose-400">L'enregistrement a échoué, réessaie.</p>
+            )}
           </div>
 
           <button

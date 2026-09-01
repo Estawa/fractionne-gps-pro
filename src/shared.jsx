@@ -4,6 +4,10 @@
 
 import { useRef, useCallback, useEffect } from "react";
 
+// --- Numéro de version de l'application ---
+// À incrémenter à chaque nouvel envoi (voir aussi VERSION.txt à la racine du projet).
+export const APP_VERSION = "1.4.0";
+
 // --- Wake Lock : empêche l'écran de s'éteindre tout seul pendant une séance active ---
 // Le verrou est automatiquement relâché par le système quand l'onglet passe en
 // arrière-plan (écran éteint) : on le redemande donc dès que l'écran redevient visible,
@@ -345,6 +349,52 @@ export function StatRow({ label, value, sub }) {
 
 // --- Ordre personnalisé des bibliothèques (mode simple et Full Power) ---
 // Un tableau d'ids stocké à part, appliqué par-dessus la liste chargée.
+
+// --- Export / import de séances au format JSON (partage entre coureurs) ---
+
+// Déclenche le téléchargement d'une séance sous forme de fichier .json.
+// `kind` sert de marqueur pour distinguer les deux bibliothèques à l'import.
+export function exportSessionToFile(saved, kind) {
+  const payload = {
+    exportKind: kind, // "fractionne-gps-pro-simple" | "fractionne-gps-pro-fullpower"
+    exportVersion: APP_VERSION,
+    exportedAt: Date.now(),
+    session: saved,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const safeTitle = (saved.title || "seance").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9-_]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "seance";
+  a.href = url;
+  a.download = `${safeTitle}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Lit un fichier sélectionné par l'utilisateur et retourne son contenu JSON parsé.
+// Rejette si le fichier est illisible ou n'a pas la forme attendue (exportKind/session).
+export function readSessionFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result);
+        if (!parsed || typeof parsed !== "object" || !parsed.session || !parsed.exportKind) {
+          reject(new Error("format-invalide"));
+          return;
+        }
+        resolve(parsed);
+      } catch (e) {
+        reject(new Error("format-invalide"));
+      }
+    };
+    reader.onerror = () => reject(new Error("lecture-impossible"));
+    reader.readAsText(file);
+  });
+}
 
 export async function getOrder(storageObj, key) {
   try {
