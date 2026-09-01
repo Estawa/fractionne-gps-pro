@@ -1,7 +1,7 @@
 Fractionné GPS Pro — suivi de version
 ======================================
 
-Version actuelle : 1.4.0
+Version actuelle : 1.5.0
 Date : 1er septembre 2026
 
 Ce numéro est aussi affiché discrètement dans l'application, à côté du titre
@@ -13,6 +13,16 @@ version en cas de doute.
 
 Historique
 ----------
+1.5.0 (1er septembre 2026) — Durée totale estimée pendant la configuration.
+  - Bandeau fixe en haut de l'écran de configuration (mode Simple et Full
+    Power) affichant la durée totale estimée de la séance, recalculée en
+    direct à chaque modification d'un paramètre.
+  - En Full Power manuel, le calcul s'appuie sur le même moteur que celui
+    utilisé pour lancer la séance (buildManualQueue), donc toujours exact
+    quel que soit l'enchaînement de séries et de types de répétition.
+  - En Full Power Hazardous Mode, l'ancien encart "Temps total estimé" en
+    bas de bloc a été retiré au profit de ce même bandeau, désormais unique.
+
 1.4.0 (1er septembre 2026) — Partage de l'application.
   - Bouton "Partager" (icône) dans la barre du haut, accessible depuis les
     deux modes (fichier src/App.jsx).
