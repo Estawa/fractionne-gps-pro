@@ -293,6 +293,14 @@ export default function FractionneGPS() {
   const effortSpeed = vma * (effortPct / 100);
   const recupSpeed = vma * (recupPct / 100);
 
+  const estimatedTotalSec = useMemo(() => {
+    const repsN = Math.max(0, Number(reps) || 0);
+    const seriesN = Math.max(0, Number(series) || 0);
+    const workBlock = repsN * (Number(workSec) || 0) + Math.max(0, repsN - 1) * (Number(restSec) || 0);
+    const seriesBlock = seriesN * workBlock + Math.max(0, seriesN - 1) * (Number(restSeriesSec) || 0);
+    return (Number(warmupSec) || 0) + seriesBlock + (Number(finalRecupSec) || 0);
+  }, [workSec, restSec, reps, series, restSeriesSec, warmupSec, finalRecupSec]);
+
   // --- État de la séance en cours ---
   const [run, setRun] = useState({ phase: "effort", series: 1, rep: 1, secondsLeft: workSec });
   const [status, setStatus] = useState("paused"); // paused | running
@@ -1176,6 +1184,13 @@ export default function FractionneGPS() {
 
       {screen === "config" && (
         <div className="w-full max-w-md space-y-5">
+          <div className="sticky top-0 z-10 bg-orange-500/10 border border-orange-500/40 rounded-2xl px-4 py-3 flex items-center justify-between backdrop-blur">
+            <span className="text-xs uppercase tracking-wide text-orange-300 flex items-center gap-1.5">
+              <TimerIcon size={14} /> Durée totale estimée
+            </span>
+            <span className="font-mono font-bold text-lg text-orange-300 tabular-nums">{fmtDuration(estimatedTotalSec)}</span>
+          </div>
+
           <div className="bg-slate-900 rounded-2xl p-4 border border-slate-800">
             <p className="text-xs uppercase tracking-wide text-slate-500 mb-3 flex items-center gap-1.5">
               <Zap size={14} className="text-orange-400" /> Vitesse de référence

@@ -6,7 +6,7 @@ import { useRef, useCallback, useEffect } from "react";
 
 // --- Numéro de version de l'application ---
 // À incrémenter à chaque nouvel envoi (voir aussi VERSION.txt à la racine du projet).
-export const APP_VERSION = "1.4.0";
+export const APP_VERSION = "1.5.0";
 
 // --- Wake Lock : empêche l'écran de s'éteindre tout seul pendant une séance active ---
 // Le verrou est automatiquement relâché par le système quand l'onglet passe en
