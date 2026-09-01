@@ -1,0 +1,56 @@
+Fractionné GPS Pro — suivi de version
+======================================
+
+Version actuelle : 1.4.0
+Date : 1er septembre 2026
+
+Ce numéro est aussi affiché discrètement dans l'application, à côté du titre
+(mode Simple et mode Full Power).
+
+À chaque nouvel envoi de zip, incrémenter la version ici ET dans
+src/shared.jsx (constante APP_VERSION), pour repérer facilement la dernière
+version en cas de doute.
+
+Historique
+----------
+1.4.0 (1er septembre 2026) — Partage de l'application.
+  - Bouton "Partager" (icône) dans la barre du haut, accessible depuis les
+    deux modes (fichier src/App.jsx).
+  - Ouvre une fenêtre avec : flashcode (QR code) de l'appli, lien copiable,
+    boutons WhatsApp et E-mail, et bouton "Autre application..." (partage
+    natif du téléphone) si le navigateur le permet.
+  - Le flashcode est généré via un service externe (api.qrserver.com) : seule
+    l'adresse de l'appli lui est transmise, mentionné à l'utilisateur dans
+    la fenêtre.
+
+1.3.0 (1er septembre 2026) — Préparation de séances à l'avance (Simple et Full Power).
+  - Bouton "Sauvegarder pour plus tard" sur l'écran de configuration, juste
+    avant le bouton de lancement (Démarrer / Lancer le Hazardous Mode), avec
+    un titre optionnel.
+  - La séance est enregistrée dans la bibliothèque habituelle sans être
+    lancée (pas de récapitulatif tant qu'elle n'a pas été réalisée), et peut
+    être retrouvée et lancée via "Refaire cette séance" un autre jour.
+  - En mode Full Power manuel, la séquence exacte est calculée à la
+    sauvegarde ; en Hazardous Mode, la séquence aléatoire est générée à la
+    sauvegarde et reste cachée jusqu'au lancement, comme pour toute séance
+    Hazardous déjà enregistrée.
+
+1.2.0 (1er septembre 2026) — Export / import de séances (Simple et Full Power).
+  - Bouton Exporter sur chaque séance de la bibliothèque et dans l'écran de
+    détail : télécharge un fichier .json contenant tous les paramètres de la
+    séance.
+  - Bouton Importer en haut de chaque bibliothèque : lit un .json et ajoute
+    la séance (elle reste ensuite modifiable normalement).
+  - Un fichier exporté depuis le mode Simple ne peut pas être importé dans
+    le mode Full Power, et inversement (message d'erreur explicite).
+
+1.1.0 (31 août 2026) — Première version avec numéro de version suivi.
+  Reprend les évolutions du zip "fractionne-gps-pro-13" :
+  - Wake Lock (écran qui ne s'éteint plus pendant une course)
+  - Sauvegarde continue + reprise automatique après extinction d'écran / appli tuée
+  - Cadran de régulation recalé précisément sur la tolérance des bips (±7%)
+  - Position GPS toujours demandée "fraîche" (maximumAge: 0)
+  - Compteurs permanents (distance totale, distance de travail, temps restant)
+  - %VMA cible affiché en direct en Hazardous Mode
+  - Sons différenciés (gong départ / fin de run / pause de série)
+  - Temps affichés aussi en minutes:secondes
