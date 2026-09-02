@@ -6,7 +6,7 @@ import { useRef, useCallback, useEffect } from "react";
 
 // --- Numéro de version de l'application ---
 // À incrémenter à chaque nouvel envoi (voir aussi VERSION.txt à la racine du projet).
-export const APP_VERSION = "1.5.0";
+export const APP_VERSION = "1.6.0";
 
 // --- Wake Lock : empêche l'écran de s'éteindre tout seul pendant une séance active ---
 // Le verrou est automatiquement relâché par le système quand l'onglet passe en
@@ -167,26 +167,26 @@ export function playGongStart(ctx) {
   strike.stop(now + 0.12);
 }
 
-// Gong de fin d'un run (entrée en récupération) : grave, posé, plus long.
+// Fin d'un run (entrée en récupération) : double bip net et aigu, nettement plus audible
+// sur les haut-parleurs de smartphone que l'ancien gong grave (signalé inaudible en usage réel).
 export function playGongStop(ctx) {
   if (!ctx) return;
   const now = ctx.currentTime;
-  const master = ctx.createGain();
-  master.gain.value = 0.5;
-  master.connect(ctx.destination);
-  [80, 120].forEach((freq, i) => {
+  function strike(t) {
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.value = freq;
-    g.gain.value = 0.6;
+    osc.type = "square";
+    osc.frequency.value = 660;
+    g.gain.value = 0.4;
     osc.connect(g);
-    g.connect(master);
-    osc.start(now);
-    g.gain.setValueAtTime(0.6, now);
-    g.gain.exponentialRampToValueAtTime(0.001, now + 1.8 + i * 0.15);
-    osc.stop(now + 2.0);
-  });
+    g.connect(ctx.destination);
+    osc.start(t);
+    g.gain.setValueAtTime(0.4, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+    osc.stop(t + 0.25);
+  }
+  strike(now);
+  strike(now + 0.28);
 }
 
 // Point sur le cadran (cercle de rayon r centré sur cx,cy) pour un angle d'aiguille donné
@@ -295,8 +295,50 @@ export function playApplause(ctx, durationSec = 3) {
 }
 
 // Zone de tolérance : dans cet écart relatif autour de la cible, silence total
-export const TOLERANCE_RATIO = 0.07;
+// (élargie de 7 à 9% : avec le lissage/anticipation de la vitesse GPS ci-dessous, une
+// tolérance un peu plus large absorbe le bruit résiduel du capteur sans perdre en exigence)
+export const TOLERANCE_RATIO = 0.09;
 export const SILENCE_CHECK_MS = 350;
+
+// --- Lissage + anticipation de la vitesse GPS ---
+// Le GPS d'un smartphone renvoie une vitesse bruitée (± plusieurs dixièmes de km/h même à
+// allure stable) et avec un léger retard par rapport au mouvement réel. On combine :
+//  1) une moyenne pondérée récente (les mesures les plus fraîches comptent plus), qui lisse
+//     le bruit sans effacer les vraies variations d'allure ;
+//  2) une extrapolation de tendance (régression linéaire sur l'historique récent), qui
+//     anticipe de `lookaheadMs` la vitesse pour compenser le retard du capteur.
+// Retourne une fonction à appeler à chaque nouvelle mesure GPS (en km/h), qui renvoie la
+// vitesse lissée/anticipée à utiliser pour l'affichage et le déclenchement des bips.
+export function createSpeedSmoother({ historyMs = 4000, lookaheadMs = 1200 } = {}) {
+  let samples = [];
+  return function pushSpeed(speedKmh, now = Date.now()) {
+    samples.push({ t: now, speed: speedKmh });
+    samples = samples.filter(s => now - s.t <= historyMs);
+    if (samples.length < 2) return speedKmh;
+
+    let wSum = 0, vSum = 0;
+    for (const s of samples) {
+      const age = now - s.t;
+      const w = Math.max(0.05, 1 - age / historyMs);
+      wSum += w; vSum += w * s.speed;
+    }
+    const smoothed = vSum / wSum;
+
+    const n = samples.length;
+    const t0 = samples[0].t;
+    const xs = samples.map(s => (s.t - t0) / 1000);
+    const ys = samples.map(s => s.speed);
+    const xMean = xs.reduce((a, b) => a + b, 0) / n;
+    const yMean = ys.reduce((a, b) => a + b, 0) / n;
+    let num = 0, den = 0;
+    for (let i = 0; i < n; i++) { num += (xs[i] - xMean) * (ys[i] - yMean); den += (xs[i] - xMean) ** 2; }
+    const slope = den > 0 ? num / den : 0; // tendance en km/h par seconde
+    const predicted = smoothed + slope * (lookaheadMs / 1000);
+
+    // Anticipation bornée pour ne pas s'emballer sur un sursaut isolé du signal GPS.
+    return Math.max(0, Math.min(predicted, smoothed + 3));
+  };
+}
 
 export function speedRatio(speed, target) {
   if (!target || target <= 0) return 0;
@@ -333,6 +375,61 @@ export function segmentCharge(distMeters, timeSec, vmaKmh) {
   const avgSpeed = (distMeters / timeSec) * 3.6;
   const avgPct = (avgSpeed / vmaKmh) * 100;
   return (avgPct / 100) * (timeSec / 60);
+}
+
+// --- Tracé GPS coloré par zone/séquence, affiché sur le récapitulatif final ---
+// L'appli n'embarque pas de clé Google Maps : on dessine donc nous-mêmes un schéma
+// (vue de dessus, sans fond de carte) du parcours, coloré selon la phase/séquence
+// traversée à chaque point. Un bouton complémentaire ouvre le tracé dans Google Maps
+// (fond de carte réel, mais sans les couleurs par séquence : limite du lien public Maps).
+export function TraceMap({ points, height = 220 }) {
+  if (!points || points.length < 2) return null;
+  const lats = points.map(p => p.lat);
+  const lngs = points.map(p => p.lng);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+  const midLat = (minLat + maxLat) / 2;
+  // Correction de l'aspect ratio : 1° de longitude vaut cos(latitude) fois moins de
+  // distance réelle qu'1° de latitude.
+  const lngScale = Math.cos((midLat * Math.PI) / 180) || 1;
+  const spanLat = Math.max(1e-6, maxLat - minLat);
+  const spanLng = Math.max(1e-6, (maxLng - minLng) * lngScale);
+  const pad = 16;
+  const w = 320, h = height;
+  const scale = Math.min((w - pad * 2) / spanLng, (h - pad * 2) / spanLat);
+  const project = (p) => {
+    const x = pad + ((p.lng - minLng) * lngScale) * scale + (w - pad * 2 - spanLng * scale) / 2;
+    const y = pad + (maxLat - p.lat) * scale + (h - pad * 2 - spanLat * scale) / 2;
+    return { x, y };
+  };
+  const segments = [];
+  for (let i = 1; i < points.length; i++) {
+    const a = project(points[i - 1]);
+    const b = project(points[i]);
+    segments.push({ a, b, color: points[i].color || "#94a3b8" });
+  }
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full rounded-xl bg-slate-950 border border-slate-800">
+      {segments.map((s, i) => (
+        <line key={i} x1={s.a.x} y1={s.a.y} x2={s.b.x} y2={s.b.y} stroke={s.color} strokeWidth="3" strokeLinecap="round" />
+      ))}
+      <circle cx={project(points[0]).x} cy={project(points[0]).y} r="4" fill="#f1f5f9" />
+      <circle cx={project(points[points.length - 1]).x} cy={project(points[points.length - 1]).y} r="4" fill="#f1f5f9" stroke="#0f172a" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+// Construit un lien Google Maps (mode marche) à partir du tracé, en sous-échantillonnant
+// si besoin pour rester dans une longueur d'URL et un nombre d'étapes raisonnables.
+// Note : Google Maps ne permet pas de colorer l'itinéraire par séquence — seul le schéma
+// dessiné par TraceMap ci-dessus distingue les zones de travail par couleur.
+export function googleMapsRouteUrl(points, maxWaypoints = 40) {
+  if (!points || points.length < 2) return null;
+  const step = Math.max(1, Math.ceil(points.length / maxWaypoints));
+  const sampled = points.filter((_, i) => i % step === 0);
+  if (sampled[sampled.length - 1] !== points[points.length - 1]) sampled.push(points[points.length - 1]);
+  const path = sampled.map(p => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join("/");
+  return `https://www.google.com/maps/dir/${path}?travelmode=walking`;
 }
 
 export function StatRow({ label, value, sub }) {

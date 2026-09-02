@@ -8,8 +8,14 @@ export const storage = {
     if (raw === null) return null;
     return { key, value: raw };
   },
+  // Écrit puis relit immédiatement la valeur pour s'assurer qu'elle a bien été
+  // persistée (protection contre un stockage plein, corrompu ou refusé par le
+  // navigateur qui laisserait croire à une sauvegarde réussie alors que la
+  // séance serait en réalité vide ou absente à la prochaine ouverture).
   async set(key, value) {
     localStorage.setItem(PREFIX + key, value);
+    const check = localStorage.getItem(PREFIX + key);
+    if (check !== value) return null;
     return { key, value };
   },
   async delete(key) {

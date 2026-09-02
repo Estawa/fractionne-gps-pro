@@ -11,6 +11,7 @@ import {
   playApplause, getOrder, setOrder, applyOrder,
   useWakeLock, saveActiveSession, loadActiveSession, clearActiveSession,
   APP_VERSION, exportSessionToFile, readSessionFile,
+  createSpeedSmoother, TraceMap, googleMapsRouteUrl,
 } from "./shared.jsx";
 
 const ACTIVE_SESSION_KEY = "activeSession-simple";
@@ -24,6 +25,13 @@ const PHASE_META = {
   restSeries: { label: "PAUSE SÉRIE", color: "text-violet-400", ring: "stroke-violet-500", bg: "bg-violet-500/10", border: "border-violet-500/40" },
   finalRecup: { label: "RÉCUPÉRATION FINALE", color: "text-teal-400", ring: "stroke-teal-500", bg: "bg-teal-500/10", border: "border-teal-500/40" },
   finished:   { label: "TERMINÉ",  color: "text-emerald-400", ring: "stroke-emerald-500", bg: "bg-emerald-500/10", border: "border-emerald-500/40" },
+};
+
+// Couleurs hexadécimales par phase, pour le tracé GPS coloré du récapitulatif final
+// (une entrée SVG ne peut pas consommer une classe Tailwind ci-dessus).
+const PHASE_TRACE_HEX = {
+  warmup: "#fbbf24", effort: "#fb923c", recup: "#38bdf8",
+  restSeries: "#a78bfa", finalRecup: "#2dd4bf", finished: "#34d399",
 };
 
 function fmtDistance(meters) {
@@ -59,15 +67,19 @@ function nextPhase(state, cfg) {
     return { phase: "effort", series: 1, rep: 1, secondsLeft: cfg.workSec };
   }
   if (phase === "effort") {
+    // Dernière répétition de la série : si une pause de série (plus longue) suit, on saute
+    // la récup individuelle et on enchaîne directement dessus, pour éviter un double repos.
+    if (rep >= cfg.reps && series < cfg.series) {
+      return { phase: "restSeries", series, rep, secondsLeft: cfg.restSeriesSec };
+    }
     return { phase: "recup", series, rep, secondsLeft: cfg.restSec };
   }
   if (phase === "recup") {
     if (rep < cfg.reps) {
       return { phase: "effort", series, rep: rep + 1, secondsLeft: cfg.workSec };
     }
-    if (series < cfg.series) {
-      return { phase: "restSeries", series, rep, secondsLeft: cfg.restSeriesSec };
-    }
+    // À ce stade, rep >= cfg.reps implique série < cfg.series déjà traité côté "effort" ;
+    // on est donc forcément sur la dernière série.
     if (cfg.finalRecupSec > 0) {
       return { phase: "finalRecup", series, rep, secondsLeft: cfg.finalRecupSec };
     }
@@ -169,30 +181,30 @@ function playGongStart(ctx) {
   strike.stop(now + 0.12);
 }
 
-// Gong de fin d'un run (entrée en "récup'") : grave, posé, plus long — signal de "relâche".
+// Fin d'un run (entrée en "récup'") : double bip net et aigu, nettement plus audible sur
+// les haut-parleurs de smartphone que l'ancien gong grave (signalé inaudible en usage réel).
 function playGongStop(ctx) {
   if (!ctx) return;
   const now = ctx.currentTime;
-  const master = ctx.createGain();
-  master.gain.value = 0.5;
-  master.connect(ctx.destination);
-  [80, 120].forEach((freq, i) => {
+  function strike(t) {
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.value = freq;
-    g.gain.value = 0.6;
+    osc.type = "square";
+    osc.frequency.value = 660;
+    g.gain.value = 0.4;
     osc.connect(g);
-    g.connect(master);
-    osc.start(now);
-    g.gain.setValueAtTime(0.6, now);
-    g.gain.exponentialRampToValueAtTime(0.001, now + 1.8 + i * 0.15);
-    osc.stop(now + 2.0);
-  });
+    g.connect(ctx.destination);
+    osc.start(t);
+    g.gain.setValueAtTime(0.4, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+    osc.stop(t + 0.25);
+  }
+  strike(now);
+  strike(now + 0.28);
 }
 
 // Zone de tolérance : dans cet écart relatif autour de la cible, silence total
-const TOLERANCE_RATIO = 0.07; // ±7% de la vitesse cible
+const TOLERANCE_RATIO = 0.09; // ±9% de la vitesse cible
 const SILENCE_CHECK_MS = 350; // fréquence de recontrôle pendant le silence
 
 // Point sur le cadran (cercle de rayon r centré sur cx,cy) pour un angle d'aiguille donné
@@ -321,6 +333,10 @@ export default function FractionneGPS() {
   const liveSpeedRef = useRef(0);
   const targetSpeedRef = useRef(0);
   const prevPhaseRef = useRef(null);
+  const speedSmootherRef = useRef(createSpeedSmoother());
+  // Points GPS capturés pendant la course (lat/lng + couleur selon la phase), pour le
+  // tracé coloré affiché sur le récapitulatif final.
+  const tracePointsRef = useRef([]);
   // Miroir synchrone de `distance`, utilisé pour les sauvegardes de séance (état toujours
   // à jour, contrairement à une valeur de state capturée dans une closure d'effet).
   const distanceRef = useRef(0);
@@ -517,7 +533,11 @@ export default function FractionneGPS() {
       (pos) => {
         const speedMs = pos.coords.speed;
         if (speedMs != null && speedMs >= 0) {
-          setLiveSpeed(speedMs * 3.6);
+          setLiveSpeed(speedSmootherRef.current(speedMs * 3.6));
+        }
+        const { latitude, longitude } = pos.coords;
+        if (latitude != null && longitude != null) {
+          tracePointsRef.current.push({ lat: latitude, lng: longitude, phase: runRef.current.phase });
         }
       },
       () => setGpsStatus("denied"),
@@ -794,6 +814,8 @@ export default function FractionneGPS() {
     const initialPhase = cfg.warmupSec > 0 ? "warmup" : "effort";
     const initialSeconds = cfg.warmupSec > 0 ? cfg.warmupSec : cfg.workSec;
     distanceRef.current = 0;
+    tracePointsRef.current = [];
+    speedSmootherRef.current = createSpeedSmoother();
     setRun({ phase: initialPhase, series: 1, rep: 1, secondsLeft: initialSeconds });
     setDistance(0);
     seriesAccRef.current = { series: 1, effortDist: 0, effortTime: 0, recupDist: 0, recupTime: 0 };
@@ -1366,16 +1388,18 @@ export default function FractionneGPS() {
                       </svg>
                       <div className="flex justify-between w-full mt-1 text-center">
                         <div>
-                          <p className="text-4xl font-mono font-bold">{vma > 0 ? ((currentSpeed / vma) * 100).toFixed(0) : 0}%</p>
-                          <p className="text-xs text-slate-500">VMA instantané</p>
-                          <p className="text-lg font-mono font-semibold mt-1">{currentSpeed.toFixed(1)} km/h</p>
-                          <p className="text-xs text-slate-500">{allureFromKmh(currentSpeed)}</p>
+                          <p className="text-5xl font-mono font-black leading-none tabular-nums">{allureFromKmh(currentSpeed)}</p>
+                          <p className="text-xs text-slate-500 mt-1.5">Allure instantanée</p>
+                          <p className="text-sm font-mono text-slate-400 mt-1">
+                            {currentSpeed.toFixed(1)} km/h · {vma > 0 ? ((currentSpeed / vma) * 100).toFixed(0) : 0}% VMA
+                          </p>
                         </div>
                         <div>
-                          <p className={`text-4xl font-mono font-bold ${meta.color}`}>{run.phase === "effort" ? effortPct : recupPct}%</p>
-                          <p className="text-xs text-slate-500">VMA cible</p>
-                          <p className={`text-lg font-mono font-semibold mt-1 ${meta.color}`}>{targetSpeed?.toFixed(1)} km/h</p>
-                          <p className="text-xs text-slate-500">{allureFromKmh(targetSpeed)}</p>
+                          <p className={`text-5xl font-mono font-black leading-none tabular-nums ${meta.color}`}>{allureFromKmh(targetSpeed)}</p>
+                          <p className="text-xs text-slate-500 mt-1.5">Allure cible</p>
+                          <p className={`text-sm font-mono mt-1 ${meta.color}`}>
+                            {targetSpeed?.toFixed(1)} km/h · {run.phase === "effort" ? effortPct : recupPct}% VMA
+                          </p>
                         </div>
                       </div>
                     </>
@@ -1475,6 +1499,28 @@ export default function FractionneGPS() {
                 <StatRow label="Distance de récupération" value={fmtDistance(recupDistanceAll)} />
                 <StatRow label="Distance échauffement + récup' finale" value={fmtDistance(warmupFinalDist)} />
               </div>
+
+              {tracePointsRef.current.length > 5 && (
+                <div className="space-y-2 pt-2 border-t border-slate-800">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Tracé de la séance</p>
+                  <TraceMap points={tracePointsRef.current.map(p => ({ ...p, color: PHASE_TRACE_HEX[p.phase] || "#94a3b8" }))} />
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: PHASE_TRACE_HEX.effort }} />Effort</span>
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: PHASE_TRACE_HEX.recup }} />Récup'</span>
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: PHASE_TRACE_HEX.restSeries }} />Pause série</span>
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: PHASE_TRACE_HEX.warmup }} />Échauf./récup' finale</span>
+                  </div>
+                  <a
+                    href={googleMapsRouteUrl(tracePointsRef.current)} target="_blank" rel="noopener noreferrer"
+                    className="block text-center text-xs text-sky-400 underline underline-offset-2 pt-1"
+                  >
+                    Ouvrir l'itinéraire dans Google Maps
+                  </a>
+                  <p className="text-[10px] text-slate-600 text-center">
+                    Schéma sans fond de carte, coloré par phase · le lien Google Maps affiche le vrai fond de carte mais sans ces couleurs.
+                  </p>
+                </div>
+              )}
 
               <div className="space-y-3 pt-3 border-t border-slate-800">
                 <p className="text-xs uppercase tracking-wide text-slate-500 flex items-center gap-1.5">
