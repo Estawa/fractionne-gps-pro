@@ -12,19 +12,32 @@ import {
   ZONES, classifyZone, segmentCharge, StatRow, getOrder, setOrder, applyOrder,
   useWakeLock, saveActiveSession, loadActiveSession, clearActiveSession,
   APP_VERSION, exportSessionToFile, readSessionFile,
+  createSpeedSmoother, TraceMap, googleMapsRouteUrl,
 } from "../shared.jsx";
 import { buildManualQueue, generateHazardousQueue } from "./engine.js";
 import { pickText } from "./personalization.js";
 
 const ACTIVE_SESSION_KEY = "activeSession-fullpower";
 
-const REP_IDS = ["A", "B", "C", "D"];
-const REP_COLORS = {
-  A: { text: "text-fuchsia-400", bg: "bg-fuchsia-500/10", border: "border-fuchsia-500/40", accent: "accent-fuchsia-500" },
-  B: { text: "text-purple-400", bg: "bg-purple-500/10", border: "border-purple-500/40", accent: "accent-purple-500" },
-  C: { text: "text-pink-400", bg: "bg-pink-500/10", border: "border-pink-500/40", accent: "accent-pink-500" },
-  D: { text: "text-violet-400", bg: "bg-violet-500/10", border: "border-violet-500/40", accent: "accent-violet-500" },
-};
+const REP_COLOR_PALETTE = [
+  { text: "text-fuchsia-400", bg: "bg-fuchsia-500/10", border: "border-fuchsia-500/40", accent: "accent-fuchsia-500", hex: "#e879f9" },
+  { text: "text-purple-400", bg: "bg-purple-500/10", border: "border-purple-500/40", accent: "accent-purple-500", hex: "#c084fc" },
+  { text: "text-pink-400", bg: "bg-pink-500/10", border: "border-pink-500/40", accent: "accent-pink-500", hex: "#f472b6" },
+  { text: "text-violet-400", bg: "bg-violet-500/10", border: "border-violet-500/40", accent: "accent-violet-500", hex: "#a78bfa" },
+  { text: "text-rose-400", bg: "bg-rose-500/10", border: "border-rose-500/40", accent: "accent-rose-500", hex: "#fb7185" },
+  { text: "text-indigo-400", bg: "bg-indigo-500/10", border: "border-indigo-500/40", accent: "accent-indigo-500", hex: "#818cf8" },
+];
+
+// Génère l'identifiant suivant façon colonnes Excel : A, B, ... Z, puis AA, AB... — permet
+// un nombre illimité de types de répétition (plus de limite à 4).
+function nextRepId(existingCount) {
+  let num = existingCount, id = "";
+  do {
+    id = String.fromCharCode(65 + (num % 26)) + id;
+    num = Math.floor(num / 26) - 1;
+  } while (num >= 0);
+  return id;
+}
 
 const PHASE_META = {
   warmup:     { label: "ÉCHAUFFEMENT", color: "text-amber-300", bg: "bg-amber-500/10", border: "border-amber-500/40" },
@@ -35,8 +48,25 @@ const PHASE_META = {
   finished:   { label: "TERMINÉ",      color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/40" },
 };
 
+function repColorFor(repTypes, id) {
+  const idx = Math.max(0, repTypes.findIndex(rt => rt.id === id));
+  return REP_COLOR_PALETTE[idx % REP_COLOR_PALETTE.length];
+}
+
+// Couleur d'un point du tracé : par type de répétition (A/B/C/D...) en travail/récup
+// normale, par phase générique sinon (échauffement, pause série, récup finale, Hazardous).
+const PHASE_TRACE_HEX_FP = { warmup: "#fbbf24", restSeries: "#a78bfa", finalRecup: "#f472b6", finished: "#34d399" };
+function traceColorForPoint(p, repTypes) {
+  if ((p.kind === "work" || p.kind === "recup") && p.repTypeId) {
+    return repColorFor(repTypes, p.repTypeId).hex;
+  }
+  if (p.kind === "work") return "#e879f9"; // Hazardous, sans type identifié
+  if (p.kind === "recup") return "#c084fc";
+  return PHASE_TRACE_HEX_FP[p.kind] || "#94a3b8";
+}
+
 function emptyRepType(id) {
-  return { id, enabled: id === "A", workPct: 100, workSec: 30, recupPct: 50, recupSec: 30 };
+  return { id, enabled: true, workPct: 100, workSec: 30, recupPct: 50, recupSec: 30 };
 }
 
 function newSeries(idx) {
@@ -49,7 +79,7 @@ export default function FullPower({ runnerName, onToast }) {
 
   // --- Config manuelle ---
   const [vma, setVma] = useState(15);
-  const [repTypes, setRepTypes] = useState(REP_IDS.map(emptyRepType));
+  const [repTypes, setRepTypes] = useState(() => [emptyRepType("A")]);
   const [seriesList, setSeriesList] = useState([newSeries(1)]);
   const [globalRepeatCount, setGlobalRepeatCount] = useState(1);
   const [warmupSec, setWarmupSec] = useState(300);
@@ -117,6 +147,10 @@ export default function FullPower({ runnerName, onToast }) {
   // Évite que le reset automatique de distance (sur changement de phase) n'écrase la
   // distance qu'on vient de restaurer au moment précis d'une reprise de séance.
   const skipDistanceResetRef = useRef(false);
+  const speedSmootherRef = useRef(createSpeedSmoother());
+  // Points GPS capturés pendant la course (lat/lng + type de répétition/phase), pour le
+  // tracé coloré affiché sur le récapitulatif final.
+  const tracePointsRef = useRef([]);
 
   // --- Reprise après extinction/relance de l'appli ---
   const [resumeSnapshot, setResumeSnapshot] = useState(null);
@@ -316,7 +350,12 @@ export default function FullPower({ runnerName, onToast }) {
     watchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
         const speedMs = pos.coords.speed;
-        if (speedMs != null && speedMs >= 0) setLiveSpeed(speedMs * 3.6);
+        if (speedMs != null && speedMs >= 0) setLiveSpeed(speedSmootherRef.current(speedMs * 3.6));
+        const { latitude, longitude } = pos.coords;
+        if (latitude != null && longitude != null) {
+          const cur2 = queueRef.current[qIndexRef.current];
+          tracePointsRef.current.push({ lat: latitude, lng: longitude, kind: cur2?.kind, repTypeId: cur2?.repTypeId });
+        }
       },
       () => setGpsStatus("denied"),
       { enableHighAccuracy: true, maximumAge: 0, timeout: 8000 }
@@ -391,6 +430,13 @@ export default function FullPower({ runnerName, onToast }) {
   function toggleRepType(id) {
     setRepTypes(list => list.map(rt => rt.id === id ? { ...rt, enabled: !rt.enabled } : rt));
   }
+  function addRepType() {
+    setRepTypes(list => [...list, emptyRepType(nextRepId(list.length))]);
+  }
+  function removeRepType(id) {
+    setRepTypes(list => list.length > 1 ? list.filter(rt => rt.id !== id) : list);
+    setSeriesList(list => list.map(s => ({ ...s, blocks: s.blocks.filter(b => b.repTypeId !== id) })));
+  }
   function addSeries() {
     setSeriesList(list => [...list, newSeries(list.length + 1)]);
   }
@@ -424,6 +470,8 @@ export default function FullPower({ runnerName, onToast }) {
     };
     raceStartFiredRef.current = false;
     recupTextFiredRef.current = false;
+    tracePointsRef.current = [];
+    speedSmootherRef.current = createSpeedSmoother();
   }
 
   function startManualSession() {
@@ -763,15 +811,20 @@ export default function FullPower({ runnerName, onToast }) {
           {configMode === "manual" ? (
             <>
               <div className="bg-slate-900/70 rounded-2xl p-4 border border-fuchsia-500/20 space-y-4">
-                <p className="text-xs uppercase tracking-wide text-slate-400">Types de répétition (jusqu'à 4)</p>
+                <p className="text-xs uppercase tracking-wide text-slate-400">Types de répétition</p>
                 {repTypes.map(rt => {
-                  const c = REP_COLORS[rt.id];
+                  const c = repColorFor(repTypes, rt.id);
                   return (
                     <div key={rt.id} className={`rounded-xl border p-3 ${rt.enabled ? c.border : "border-slate-800"} ${rt.enabled ? c.bg : "bg-slate-900"}`}>
-                      <label className="flex items-center gap-2 mb-2">
-                        <input type="checkbox" checked={rt.enabled} onChange={() => toggleRepType(rt.id)} className={c.accent} />
-                        <span className={`font-bold ${c.text}`}>Type {rt.id}</span>
-                      </label>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="flex items-center gap-2">
+                          <input type="checkbox" checked={rt.enabled} onChange={() => toggleRepType(rt.id)} className={c.accent} />
+                          <span className={`font-bold ${c.text}`}>Type {rt.id}</span>
+                        </label>
+                        {repTypes.length > 1 && (
+                          <button onClick={() => removeRepType(rt.id)} className="text-slate-500"><Trash2 size={14} /></button>
+                        )}
+                      </div>
                       {rt.enabled && (
                         <div className="grid grid-cols-2 gap-2">
                           <MiniField label="%VMA travail" value={rt.workPct} onChange={v => updateRepType(rt.id, { workPct: v })} />
@@ -783,6 +836,12 @@ export default function FullPower({ runnerName, onToast }) {
                     </div>
                   );
                 })}
+                <button
+                  onClick={addRepType}
+                  className="w-full flex items-center justify-center gap-1.5 text-sm py-2 rounded-xl border border-dashed border-fuchsia-500/40 text-fuchsia-300"
+                >
+                  <Plus size={14} /> Ajouter un type de répétition
+                </button>
               </div>
 
               <div className="bg-slate-900/70 rounded-2xl p-4 border border-fuchsia-500/20 space-y-4">
@@ -801,7 +860,7 @@ export default function FullPower({ runnerName, onToast }) {
 
                     {s.blocks.map((b, bIdx) => (
                       <div key={bIdx} className="flex items-center gap-2">
-                        <span className={`text-xs font-bold w-5 ${REP_COLORS[b.repTypeId].text}`}>{b.repTypeId}</span>
+                        <span className={`text-xs font-bold w-5 ${repColorFor(repTypes, b.repTypeId).text}`}>{b.repTypeId}</span>
                         <span className="text-xs text-slate-400">×</span>
                         <input
                           type="number" value={b.count}
@@ -818,7 +877,7 @@ export default function FullPower({ runnerName, onToast }) {
                         <button
                           key={rt.id}
                           onClick={() => addBlockToSeries(s.id, rt.id)}
-                          className={`text-xs px-2 py-1 rounded-lg border ${REP_COLORS[rt.id].border} ${REP_COLORS[rt.id].text} flex items-center gap-1`}
+                          className={`text-xs px-2 py-1 rounded-lg border ${repColorFor(repTypes, rt.id).border} ${repColorFor(repTypes, rt.id).text} flex items-center gap-1`}
                         >
                           <Plus size={11} /> {rt.id}
                         </button>
@@ -1124,18 +1183,18 @@ export default function FullPower({ runnerName, onToast }) {
               <NeedleGauge currentSpeed={simMode ? simSpeed : liveSpeed} targetSpeed={targetSpeed} />
               <div className="flex justify-between w-full mt-1 text-center">
                 <div>
-                  <p className="text-4xl font-mono font-bold">{vma > 0 ? (((simMode ? simSpeed : liveSpeed) / vma) * 100).toFixed(0) : 0}%</p>
-                  <p className="text-xs text-slate-500">VMA instantané</p>
-                  <p className="text-lg font-mono font-semibold mt-1">{(simMode ? simSpeed : liveSpeed).toFixed(1)} km/h</p>
-                  <p className="text-xs text-slate-500">{allureFromKmh(simMode ? simSpeed : liveSpeed)}</p>
+                  <p className="text-5xl font-mono font-black leading-none tabular-nums">{allureFromKmh(simMode ? simSpeed : liveSpeed)}</p>
+                  <p className="text-xs text-slate-500 mt-1.5">Allure instantanée</p>
+                  <p className="text-sm font-mono text-slate-400 mt-1">
+                    {(simMode ? simSpeed : liveSpeed).toFixed(1)} km/h · {vma > 0 ? (((simMode ? simSpeed : liveSpeed) / vma) * 100).toFixed(0) : 0}% VMA
+                  </p>
                 </div>
                 {/* %VMA cible affiché même en Hazardous Mode : c'est l'objectif de la phase
                     en cours, pas une info sur la suite de la séance — la surprise reste intacte. */}
                 <div>
-                  <p className="text-4xl font-mono font-bold text-fuchsia-300">{current.pct}%</p>
-                  <p className="text-xs text-slate-500">VMA cible</p>
-                  <p className="text-lg font-mono font-semibold mt-1 text-fuchsia-300">{targetSpeed.toFixed(1)} km/h</p>
-                  <p className="text-xs text-slate-500">{allureFromKmh(targetSpeed)}</p>
+                  <p className="text-5xl font-mono font-black leading-none tabular-nums text-fuchsia-300">{allureFromKmh(targetSpeed)}</p>
+                  <p className="text-xs text-slate-500 mt-1.5">Allure cible</p>
+                  <p className="text-sm font-mono mt-1 text-fuchsia-300">{targetSpeed.toFixed(1)} km/h · {current.pct}% VMA</p>
                 </div>
               </div>
               <p className="text-xs text-slate-500 mt-2 flex items-center gap-1">
@@ -1196,6 +1255,31 @@ export default function FullPower({ runnerName, onToast }) {
                 <StatRow label="Temps de récupération" value={fmtDuration(totalRecupTime)} />
                 <StatRow label="Distance totale" value={fmtDistance(totalDistanceAll)} />
               </div>
+
+              {tracePointsRef.current.length > 5 && (
+                <div className="space-y-2 pt-2 border-t border-slate-800">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Tracé de la séance</p>
+                  <TraceMap points={tracePointsRef.current.map(p => ({ ...p, color: traceColorForPoint(p, repTypes) }))} />
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
+                    {repTypes.map(rt => (
+                      <span key={rt.id} className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full inline-block" style={{ background: repColorFor(repTypes, rt.id).hex }} />Type {rt.id}
+                      </span>
+                    ))}
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: PHASE_TRACE_HEX_FP.restSeries }} />Pause série</span>
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: PHASE_TRACE_HEX_FP.warmup }} />Échauf./récup' finale</span>
+                  </div>
+                  <a
+                    href={googleMapsRouteUrl(tracePointsRef.current)} target="_blank" rel="noopener noreferrer"
+                    className="block text-center text-xs text-sky-400 underline underline-offset-2 pt-1"
+                  >
+                    Ouvrir l'itinéraire dans Google Maps
+                  </a>
+                  <p className="text-[10px] text-slate-600 text-center">
+                    Schéma sans fond de carte, coloré par séquence · le lien Google Maps affiche le vrai fond de carte mais sans ces couleurs.
+                  </p>
+                </div>
+              )}
 
               <div className="space-y-3 pt-3 border-t border-slate-800">
                 <p className="text-xs uppercase tracking-wide text-slate-500 flex items-center gap-1.5">

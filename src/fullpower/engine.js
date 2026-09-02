@@ -25,25 +25,38 @@ export function buildManualQueue({ repTypes, seriesList, globalRepeatCount, warm
   const totalLoops = Math.max(1, globalRepeatCount || 1);
   for (let loop = 0; loop < totalLoops; loop++) {
     seriesList.forEach((serie, sIdx) => {
+      const isVeryLastSerie = loop === totalLoops - 1 && sIdx === seriesList.length - 1;
+      const willHaveSeriesBreak = !isVeryLastSerie && serie.restSeriesSec > 0;
       const serieRepeat = Math.max(1, serie.repeatCount || 1);
+
+      // Liste à plat des types de répétition à jouer pour une occurrence de cette série,
+      // pour pouvoir repérer précisément la toute dernière unité de travail.
+      const units = [];
+      serie.blocks.forEach(block => {
+        const rt = byId[block.repTypeId];
+        if (!rt) return;
+        for (let i = 0; i < Math.max(1, block.count || 1); i++) units.push(rt);
+      });
+
       for (let sr = 0; sr < serieRepeat; sr++) {
-        serie.blocks.forEach(block => {
-          const rt = byId[block.repTypeId];
-          if (!rt) return;
-          for (let i = 0; i < Math.max(1, block.count || 1); i++) {
-            const workPhase = { kind: "work", pct: rt.workPct, seconds: rt.workSec, repTypeId: rt.id, seriesLabel: serie.label || `Série ${sIdx + 1}` };
-            if (pendingSeriesStart && startLatencySec > 0) {
-              workPhase.latencySec = startLatencySec;
-            }
-            pendingSeriesStart = false;
-            queue.push(workPhase);
+        const isLastSerieRepeat = sr === serieRepeat - 1;
+        units.forEach((rt, uIdx) => {
+          const isVeryLastUnit = isLastSerieRepeat && uIdx === units.length - 1;
+          const workPhase = { kind: "work", pct: rt.workPct, seconds: rt.workSec, repTypeId: rt.id, seriesLabel: serie.label || `Série ${sIdx + 1}` };
+          if (pendingSeriesStart && startLatencySec > 0) {
+            workPhase.latencySec = startLatencySec;
+          }
+          pendingSeriesStart = false;
+          queue.push(workPhase);
+          // Dernière répétition de la série et une pause de série va suivre : on saute la
+          // récup individuelle pour éviter un double repos (la pause de série suffit).
+          if (!(isVeryLastUnit && willHaveSeriesBreak)) {
             queue.push({ kind: "recup", pct: rt.recupPct, seconds: rt.recupSec, repTypeId: rt.id, seriesLabel: serie.label || `Série ${sIdx + 1}` });
           }
         });
       }
       // pause entre séries, sauf après la toute dernière occurrence de la toute dernière série
-      const isVeryLast = loop === totalLoops - 1 && sIdx === seriesList.length - 1;
-      if (!isVeryLast && serie.restSeriesSec > 0) {
+      if (willHaveSeriesBreak) {
         queue.push({ kind: "restSeries", seconds: serie.restSeriesSec });
         pendingSeriesStart = true;
       }
