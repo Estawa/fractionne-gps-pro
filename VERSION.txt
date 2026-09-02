@@ -1,8 +1,8 @@
 Fractionné GPS Pro — suivi de version
 ======================================
 
-Version actuelle : 1.5.0
-Date : 1er septembre 2026
+Version actuelle : 1.6.0
+Date : 2 septembre 2026
 
 Ce numéro est aussi affiché discrètement dans l'application, à côté du titre
 (mode Simple et mode Full Power).
@@ -13,6 +13,39 @@ version en cas de doute.
 
 Historique
 ----------
+1.6.0 (2 septembre 2026) — Retours du premier vrai test course, mode Simple et Full Power.
+  - Bug corrigé : une séance préparée/enregistrée pouvait se retrouver vide à la
+    prochaine ouverture. Le stockage relit désormais chaque écriture aussitôt
+    après pour vérifier qu'elle a bien été persistée (src/storage.js) ; si
+    l'écriture échoue, l'appli le signale au lieu de laisser croire à une
+    sauvegarde réussie.
+  - Gong de fin de run remplacé par un double bip aigu, nettement plus audible
+    sur les haut-parleurs de smartphone que l'ancien gong grave (signalé
+    inaudible en usage réel). Mode Simple et Full Power.
+  - Suppression de la récupération individuelle en double : quand la dernière
+    répétition d'une série est immédiatement suivie d'une pause de série, plus
+    de petite récup' avant celle-ci — on enchaîne directement sur la pause
+    (plus longue). Mode Simple (src/FractionneGPS.jsx) et Full Power
+    (src/fullpower/engine.js).
+  - Vitesse GPS lissée et anticipée : moyenne pondérée récente (réduit le bruit
+    de mesure) + extrapolation de tendance sur l'historique récent (compense le
+    léger retard du capteur GPS), avant de servir à l'affichage et aux bips.
+    Tolérance de silence élargie de ±7% à ±9% en complément. Mode Simple et
+    Full Power (src/shared.jsx : createSpeedSmoother).
+  - Affichage de course revu : l'allure (min:s/km) instantanée et cible est
+    désormais le gros chiffre mis en avant, avec la vitesse en km/h et le %VMA
+    en info secondaire juste en dessous. Mode Simple et Full Power.
+  - Full Power : nombre de types de répétition (A/B/C/D...) désormais illimité
+    au lieu d'un maximum de 4 — bouton "Ajouter un type de répétition" et
+    suppression individuelle de chaque type.
+  - Tracé de la séance sur le récapitulatif final : schéma coloré du parcours
+    (par phase en mode Simple, par type de répétition A/B/C/D... en Full
+    Power), dessiné par l'appli elle-même (pas de fond de carte, l'appli
+    n'embarque pas de clé Google Maps). Un lien "Ouvrir l'itinéraire dans
+    Google Maps" complète l'ensemble avec un vrai fond de carte, mais sans les
+    couleurs par séquence (limite du lien public Google Maps, qui ne permet
+    pas de colorer un itinéraire par tronçon).
+
 1.5.0 (1er septembre 2026) — Durée totale estimée pendant la configuration.
   - Bandeau fixe en haut de l'écran de configuration (mode Simple et Full
     Power) affichant la durée totale estimée de la séance, recalculée en

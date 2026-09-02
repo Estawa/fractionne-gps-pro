@@ -1,0 +1,50 @@
+Fractionné GPS Pro — Changelog du 2 septembre 2026 (v1.6.0)
+=============================================================
+
+Suite au premier vrai test en course, voici ce qui a été corrigé/ajouté.
+(Le détail technique complet est aussi dans VERSION.txt.)
+
+1) Bug : séance préparée la veille, vide le lendemain
+   -> Corrigé. Le stockage vérifie maintenant que chaque sauvegarde a bien
+      été écrite (relecture immédiate après écriture). Si jamais une
+      sauvegarde échoue, l'appli te le dira au lieu de te laisser croire
+      que c'est bon.
+
+2) Gong de fin de run inaudible
+   -> Remplacé par un double bip aigu, bien plus audible en extérieur.
+
+3) Récup en trop avant une pause de série
+   -> Corrigé. Si la dernière répétition d'une série est suivie d'une pause
+      de série, il n'y a plus de petite récup' avant : on enchaîne
+      directement sur la pause de série.
+
+4) Difficulté à tenir la cadence
+   -> La vitesse GPS est maintenant lissée (moins de bruit) et anticipée
+      (compense le léger retard du capteur GPS), et la zone de tolérance
+      "sans bip" est passée de ±7% à ±9%. Ça devrait rendre le retour
+      d'allure beaucoup plus fidèle à ta vitesse réelle.
+
+5) Tracé de la séance sur Google Maps
+   -> Ajouté. En fin de séance, tu verras un schéma coloré de ton parcours
+      (couleur par phase en mode Simple, par type A/B/C/D en Full Power),
+      dessiné directement par l'appli. Un bouton "Ouvrir l'itinéraire dans
+      Google Maps" ouvre aussi le tracé sur un vrai fond de carte — mais
+      sans les couleurs par séquence, ce que le lien public Google Maps ne
+      permet pas de faire (seul le schéma de l'appli distingue les zones).
+
+6) Nombre de séquences A/B/C/D illimité (Full Power)
+   -> Corrigé. Un bouton "Ajouter un type de répétition" permet d'en créer
+      autant que voulu (E, F, G...), avec suppression individuelle.
+
+Bonus : allures instantanée et cible plus visibles
+   -> L'allure (min:s/km) est maintenant le gros chiffre affiché pendant la
+      course, avec la vitesse en km/h et le %VMA juste en dessous en info
+      secondaire.
+
+À surveiller au prochain test
+------------------------------
+- Le lissage/anticipation GPS est un réglage prudent (extrapolation à 1,2s,
+  bornée). Si la cadence reste difficile à tenir, ou au contraire si le
+  retour semble "sauter" un peu, dis-le : c'est réglable finement.
+- Le tracé Google Maps peut être un peu haché en début/fin de zones vu la
+  fréquence de mise à jour du GPS — rien d'anormal.
