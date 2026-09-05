@@ -1,0 +1,52 @@
+Fractionné GPS Pro — Changelog du 5 septembre 2026 (v1.7.0)
+=============================================================
+
+7 demandes de modification, appliquées en mode Simple ET Full Power.
+(Le détail technique complet est aussi dans VERSION.txt.)
+
+1) Répétitions en menu déroulant
+   -> Le nombre de répétitions se choisit maintenant dans une liste
+      déroulante plutôt qu'en tapant un chiffre. Mode Simple :
+      "Répétitions / série". Full Power : nombre de répétitions d'un
+      type donné (A/B/C/D...) dans une série.
+
+2) Durées en minutes:secondes
+   -> Les temps de travail, de récup' et de pause entre séries se
+      saisissent désormais en min:sec (deux champs côte à côte) au lieu
+      de secondes brutes, dans le paramétrage des deux modes. Rien ne
+      change dans le fonctionnement de l'appli : en interne, tout reste
+      calculé en secondes comme avant.
+
+3) Bibliothèque : indications de préparation
+   -> Une séance sauvegardée "pour plus tard" (pas encore réalisée)
+      affiche maintenant un badge "Préparée" et sa durée totale
+      estimée, directement dans la liste de la bibliothèque — pour
+      choisir sans avoir à ouvrir chaque séance en détail.
+
+4) Sélection dans l'historique = chargement, pas lancement immédiat
+   -> Cliquer sur "Charger cette séance" (liste ou détail de la
+      bibliothèque) ouvre maintenant l'écran de paramétrage avec tous
+      les réglages de cette séance déjà remplis, au lieu de démarrer la
+      course tout de suite. Tu peux ainsi ajuster un paramètre avant de
+      lancer, ou juste vérifier, puis appuyer sur "Démarrer" toi-même.
+
+5) Numéro de répétition à côté du chrono
+   -> Pendant l'effort ou la récup', le numéro de la répétition en
+      cours dans sa série s'affiche maintenant juste à côté du temps
+      qui décompte (ex. "3/9" = 3e répétition sur les 9 prévues).
+
+6) Repère visuel de l'objectif sur le cadran
+   -> Un petit repère jaune fixe marque désormais le centre de la zone
+      verte du cadran de régulation. L'objectif (la vitesse cible) y
+      était déjà exactement au milieu mathématiquement, mais rien ne le
+      montrait clairement à l'œil ; c'est maintenant explicite, avec
+      une légende sous le cadran.
+
+7) Récaps distance parcourue / distance prévue
+   -> Trois nouveaux niveaux de récapitulatif, comparant la distance
+      réellement parcourue à la distance théorique à la vitesse cible :
+        - après chaque répétition de travail (pendant la récup' qui suit)
+        - après chaque série entière, travail uniquement, récup'
+          exclue (pendant la pause de série)
+        - sur le total de travail de toute la séance, dans le
+          récapitulatif final
