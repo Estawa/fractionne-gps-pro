@@ -12,7 +12,7 @@ import {
   useWakeLock, saveActiveSession, loadActiveSession, clearActiveSession,
   APP_VERSION, exportSessionToFile, readSessionFile,
   createSpeedSmoother, TraceMap, googleMapsRouteUrl,
-  CountSelect, DurationField, theoreticalDistanceMeters, GaugeTargetTick,
+  CountSelect, DurationField, DurationSelectField, theoreticalDistanceMeters, GaugeTargetTick,
 } from "./shared.jsx";
 
 const ACTIVE_SESSION_KEY = "activeSession-simple";
@@ -1332,8 +1332,8 @@ export default function FractionneGPS() {
               <TimerIcon size={14} className="text-amber-400" /> Échauffement, latence & récup' finale
             </p>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Échauffement (s)" value={warmupSec} onChange={setWarmupSec} />
-              <Field label="Récup' finale (s)" value={finalRecupSec} onChange={setFinalRecupSec} />
+              <DurationSelectField label="Échauffement" valueSec={warmupSec} onChange={setWarmupSec} />
+              <DurationSelectField label="Récup' finale" valueSec={finalRecupSec} onChange={setFinalRecupSec} />
               <Field
                 label="Latence avant régulation (1ère rép. de chaque série, s)"
                 value={startLatencySec}

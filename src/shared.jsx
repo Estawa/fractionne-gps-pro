@@ -6,7 +6,7 @@ import { useRef, useCallback, useEffect } from "react";
 
 // --- Numéro de version de l'application ---
 // À incrémenter à chaque nouvel envoi (voir aussi VERSION.txt à la racine du projet).
-export const APP_VERSION = "1.7.0";
+export const APP_VERSION = "1.8.0";
 
 // --- Wake Lock : empêche l'écran de s'éteindre tout seul pendant une séance active ---
 // Le verrou est automatiquement relâché par le système quand l'onglet passe en
@@ -478,6 +478,42 @@ export function DurationField({ label, valueSec, onChange, full }) {
           type="number" min="0" max="59" value={ss} onChange={e => setSec(e.target.value)}
           className="w-full bg-slate-800 rounded-lg px-2 py-2 font-mono text-center outline-none focus:ring-2 focus:ring-slate-500"
         />
+        <span className="text-[11px] text-slate-500 shrink-0">s</span>
+      </div>
+    </div>
+  );
+}
+
+// --- Saisie d'une durée en minutes:secondes via deux menus déroulants ---
+// Utilisé pour l'échauffement et la récup' finale (Simple et Full Power) : durées plutôt
+// longues et rarement fines, un menu déroulant est plus rapide qu'un champ libre. La valeur
+// manipulée par l'appli reste des secondes totales (aucun changement de modèle de données).
+export function DurationSelectField({ label, valueSec, onChange, maxMin = 30, secStep = 5, full }) {
+  const totalSec = Math.max(0, Math.floor(Number(valueSec) || 0));
+  const mm = Math.min(maxMin, Math.floor(totalSec / 60));
+  const ssRaw = totalSec % 60;
+  const secOptions = Array.from({ length: Math.ceil(60 / secStep) }, (_, i) => i * secStep);
+  const ss = secOptions.includes(ssRaw) ? ssRaw : secOptions.reduce((a, b) => (Math.abs(b - ssRaw) < Math.abs(a - ssRaw) ? b : a), 0);
+  const minOptions = Array.from({ length: maxMin + 1 }, (_, i) => i);
+  return (
+    <div className={full ? "col-span-2" : ""}>
+      <label className="text-xs text-slate-400">{label}</label>
+      <div className="flex items-center gap-1.5 mt-1">
+        <select
+          value={mm}
+          onChange={e => onChange(parseInt(e.target.value) * 60 + ss)}
+          className="w-full bg-slate-800 rounded-lg px-2 py-2 font-mono text-center outline-none focus:ring-2 focus:ring-slate-500"
+        >
+          {minOptions.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <span className="text-[11px] text-slate-500 shrink-0">min</span>
+        <select
+          value={ss}
+          onChange={e => onChange(mm * 60 + parseInt(e.target.value))}
+          className="w-full bg-slate-800 rounded-lg px-2 py-2 font-mono text-center outline-none focus:ring-2 focus:ring-slate-500"
+        >
+          {secOptions.map(s => <option key={s} value={s}>{String(s).padStart(2, "0")}</option>)}
+        </select>
         <span className="text-[11px] text-slate-500 shrink-0">s</span>
       </div>
     </div>
