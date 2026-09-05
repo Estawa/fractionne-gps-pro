@@ -13,6 +13,7 @@ import {
   useWakeLock, saveActiveSession, loadActiveSession, clearActiveSession,
   APP_VERSION, exportSessionToFile, readSessionFile,
   createSpeedSmoother, TraceMap, googleMapsRouteUrl,
+  CountSelect, DurationField, theoreticalDistanceMeters, GaugeTargetTick,
 } from "../shared.jsx";
 import { buildManualQueue, generateHazardousQueue } from "./engine.js";
 import { pickText } from "./personalization.js";
@@ -71,6 +72,13 @@ function emptyRepType(id) {
 
 function newSeries(idx) {
   return { id: `s${Date.now()}-${idx}`, label: `Série ${idx}`, blocks: [], repeatCount: 1, restSeriesSec: 120 };
+}
+
+// Durée totale estimée d'une séance sauvegardée, à partir de sa file de phases déjà
+// construite (identique quelle que soit la config d'origine, manuel ou Hazardous).
+function estimateQueueTotalSec(queue) {
+  if (!queue || !queue.length) return 0;
+  return queue.reduce((sum, p) => sum + (p.seconds || 0), 0);
 }
 
 export default function FullPower({ runnerName, onToast }) {
@@ -151,6 +159,12 @@ export default function FullPower({ runnerName, onToast }) {
   // Points GPS capturés pendant la course (lat/lng + type de répétition/phase), pour le
   // tracé coloré affiché sur le récapitulatif final.
   const tracePointsRef = useRef([]);
+  // Récap "distance réalisée / distance prévue" de la dernière répétition de travail
+  // terminée, et de la dernière série achevée (accumulée uniquement sur les phases de
+  // travail, hors récup) — affichés pendant les phases de récup'/pause de série.
+  const lastRepRecapRef = useRef(null); // { actualDist, theoreticalDist, repIndexInSeries, repsInSeriesTotal }
+  const lastSeriesRecapRef = useRef(null); // { actualDist, theoreticalDist, seriesLabel }
+  const seriesWorkAccRef = useRef({ actualDist: 0, theoreticalDist: 0 });
 
   // --- Reprise après extinction/relance de l'appli ---
   const [resumeSnapshot, setResumeSnapshot] = useState(null);
@@ -268,6 +282,31 @@ export default function FullPower({ runnerName, onToast }) {
           nextIdx = qIndexRef.current + 1;
           const nextPhase = queueRef.current[nextIdx] || { kind: "finished", seconds: 0 };
           recupTextFiredRef.current = false;
+
+          // Une répétition de travail vient de se terminer : récap distance réalisée/prévue,
+          // et cumul pour le récap de la série en cours (travail uniquement, hors récup).
+          if (cur.kind === "work") {
+            const theoreticalRepDist = theoreticalDistanceMeters(vma * ((cur.pct || 0) / 100), cur.seconds);
+            lastRepRecapRef.current = {
+              actualDist: distanceRef.current, theoreticalDist: theoreticalRepDist,
+              repIndexInSeries: cur.repIndexInSeries, repsInSeriesTotal: cur.repsInSeriesTotal,
+            };
+            seriesWorkAccRef.current = {
+              actualDist: seriesWorkAccRef.current.actualDist + distanceRef.current,
+              theoreticalDist: seriesWorkAccRef.current.theoreticalDist + theoreticalRepDist,
+            };
+          }
+          // Fin d'une occurrence de série (la phase suivante n'est plus travail ni récup) :
+          // récap de la série entière, puis on remet le cumul à zéro pour la suivante.
+          if ((cur.kind === "work" || cur.kind === "recup") && nextPhase.kind !== "work" && nextPhase.kind !== "recup") {
+            lastSeriesRecapRef.current = {
+              actualDist: seriesWorkAccRef.current.actualDist,
+              theoreticalDist: seriesWorkAccRef.current.theoreticalDist,
+              seriesLabel: cur.seriesLabel,
+            };
+            seriesWorkAccRef.current = { actualDist: 0, theoreticalDist: 0 };
+          }
+
           setQIndex(nextIdx);
           if (nextPhase.kind === "finished") setStatus("paused");
           secondsForNext = nextPhase.seconds;
@@ -472,6 +511,9 @@ export default function FullPower({ runnerName, onToast }) {
     recupTextFiredRef.current = false;
     tracePointsRef.current = [];
     speedSmootherRef.current = createSpeedSmoother();
+    lastRepRecapRef.current = null;
+    lastSeriesRecapRef.current = null;
+    seriesWorkAccRef.current = { actualDist: 0, theoreticalDist: 0 };
   }
 
   function startManualSession() {
@@ -684,6 +726,30 @@ export default function FullPower({ runnerName, onToast }) {
     setScreen("libraryDetail");
   }
 
+  // Charge la configuration d'une séance sauvegardée sur l'écran de paramétrage (sans la
+  // lancer), pour pouvoir l'adapter avant de démarrer — plutôt qu'une relance immédiate.
+  function loadSessionConfig(saved) {
+    if (!saved) return;
+    setVma(saved.vma ?? vma);
+    if (saved.mode === "hazardous") {
+      const c = saved.config || {};
+      setConfigMode("hazardous");
+      setHzWarmupSec(c.warmupSec ?? 300);
+      setHzWorkTotalSec(c.workTotalSec ?? 1200);
+      setHzFinalRecupSec(c.finalRecupSec ?? 180);
+    } else {
+      const c = saved.config || {};
+      setConfigMode("manual");
+      setRepTypes(c.repTypes && c.repTypes.length ? c.repTypes : [emptyRepType("A")]);
+      setSeriesList(c.seriesList && c.seriesList.length ? c.seriesList : [newSeries(1)]);
+      setGlobalRepeatCount(c.globalRepeatCount ?? 1);
+      setWarmupSec(c.warmupSec ?? 300);
+      setFinalRecupSec(c.finalRecupSec ?? 180);
+      setStartLatencySec(c.startLatencySec ?? 4);
+    }
+    setScreen("config");
+  }
+
   // Relance la séance sauvegardée à l'identique (même file de phases, même VMA)
   function replaySavedSession(saved) {
     if (!saved?.queue?.length) return;
@@ -718,6 +784,11 @@ export default function FullPower({ runnerName, onToast }) {
   const totalDistanceAll = ["work", "recup", "restSeries", "warmupFinal"]
     .reduce((sum, k) => sum + acc.current[k].dist, 0);
   const workDistanceAll = acc.current.work.dist;
+  // Distance théorique totale de travail (somme sur toute la file de phases "work" déjà
+  // construite), pour la comparer à la distance réellement parcourue en fin de séance.
+  const theoreticalTotalWorkDist = queue.reduce((sum, p) => (
+    p.kind === "work" ? sum + theoreticalDistanceMeters(vma * ((p.pct || 0) / 100), p.seconds) : sum
+  ), 0);
   // Durée totale planifiée = somme des durées de toutes les phases de la file (connue dès le
   // départ, y compris en Hazardous Mode où elle est juste cachée à l'écran).
   const totalPlannedSeconds = queue.reduce((sum, p) => sum + (p.seconds || 0), 0);
@@ -828,9 +899,9 @@ export default function FullPower({ runnerName, onToast }) {
                       {rt.enabled && (
                         <div className="grid grid-cols-2 gap-2">
                           <MiniField label="%VMA travail" value={rt.workPct} onChange={v => updateRepType(rt.id, { workPct: v })} />
-                          <MiniField label="Temps travail (s)" value={rt.workSec} onChange={v => updateRepType(rt.id, { workSec: v })} />
+                          <DurationField label="Temps travail" valueSec={rt.workSec} onChange={v => updateRepType(rt.id, { workSec: v })} />
                           <MiniField label="%VMA récup" value={rt.recupPct} onChange={v => updateRepType(rt.id, { recupPct: v })} />
-                          <MiniField label="Temps récup (s)" value={rt.recupSec} onChange={v => updateRepType(rt.id, { recupSec: v })} />
+                          <DurationField label="Temps récup" valueSec={rt.recupSec} onChange={v => updateRepType(rt.id, { recupSec: v })} />
                         </div>
                       )}
                     </div>
@@ -862,11 +933,13 @@ export default function FullPower({ runnerName, onToast }) {
                       <div key={bIdx} className="flex items-center gap-2">
                         <span className={`text-xs font-bold w-5 ${repColorFor(repTypes, b.repTypeId).text}`}>{b.repTypeId}</span>
                         <span className="text-xs text-slate-400">×</span>
-                        <input
-                          type="number" value={b.count}
+                        <select
+                          value={b.count}
                           onChange={e => updateBlock(s.id, bIdx, { count: parseInt(e.target.value) || 1 })}
                           className="w-16 bg-slate-800 rounded-lg px-2 py-1 text-sm font-mono outline-none"
-                        />
+                        >
+                          {Array.from({ length: 40 }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
+                        </select>
                         <span className="text-xs text-slate-500">répétition(s)</span>
                         <button onClick={() => removeBlock(s.id, bIdx)} className="ml-auto text-slate-500"><Trash2 size={13} /></button>
                       </div>
@@ -886,7 +959,7 @@ export default function FullPower({ runnerName, onToast }) {
 
                     <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800">
                       <MiniField label="Répéter cette série ×" value={s.repeatCount} onChange={v => updateSeries(s.id, { repeatCount: v })} />
-                      <MiniField label="Pause après série (s)" value={s.restSeriesSec} onChange={v => updateSeries(s.id, { restSeriesSec: v })} />
+                      <DurationField label="Pause après série" valueSec={s.restSeriesSec} onChange={v => updateSeries(s.id, { restSeriesSec: v })} />
                     </div>
                   </div>
                 ))}
@@ -1018,8 +1091,15 @@ export default function FullPower({ runnerName, onToast }) {
             <div key={s.id} className="bg-slate-900/70 rounded-2xl p-4 border border-fuchsia-500/20 space-y-1.5">
               <div className="flex justify-between items-start gap-2">
                 <button onClick={() => openLibraryDetail(s)} className="text-left flex-1">
-                  <span className="font-semibold text-sm block">{s.title || "Séance sans nom"}</span>
-                  <span className="text-xs text-slate-500">{s.date}</span>
+                  <span className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-sm block">{s.title || "Séance sans nom"}</span>
+                    {!s.totals && (
+                      <span className="text-[10px] uppercase tracking-wide bg-sky-500/15 text-sky-300 border border-sky-500/30 rounded-full px-2 py-0.5">
+                        Préparée
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-xs text-slate-500 block">{s.date}</span>
                 </button>
                 <div className="flex items-center gap-1 shrink-0">
                   <button onClick={() => moveLibraryItem(s.id, -1)} disabled={idx === 0}
@@ -1043,7 +1123,9 @@ export default function FullPower({ runnerName, onToast }) {
                   {s.mode === "hazardous" ? "Hazardous" : "Manuel"}
                 </span>
                 <p className="text-xs text-slate-400">
-                  Travail : {fmtDuration(s.totals?.workTime || 0)} · Vmax : {(s.totals?.maxSpeed || 0).toFixed(1)} km/h
+                  {s.totals
+                    ? <>Travail : {fmtDuration(s.totals?.workTime || 0)} · Vmax : {(s.totals?.maxSpeed || 0).toFixed(1)} km/h</>
+                    : <>Durée totale estimée : {fmtDuration(estimateQueueTotalSec(s.queue))}</>}
                 </p>
                 {s.comment && <p className="text-sm italic text-slate-300">"{s.comment}"</p>}
               </button>
@@ -1057,11 +1139,21 @@ export default function FullPower({ runnerName, onToast }) {
           <div className="bg-slate-900/70 rounded-2xl p-5 border border-fuchsia-500/20 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold">{libraryDetail.title || "Séance sans nom"}</h2>
-              <span className={`text-xs px-2 py-0.5 rounded-full ${libraryDetail.mode === "hazardous" ? "bg-purple-500/20 text-purple-300" : "bg-fuchsia-500/20 text-fuchsia-300"}`}>
-                {libraryDetail.mode === "hazardous" ? "Hazardous" : "Manuel"}
-              </span>
+              <div className="flex items-center gap-1.5">
+                {!libraryDetail.totals && (
+                  <span className="text-[10px] uppercase tracking-wide bg-sky-500/15 text-sky-300 border border-sky-500/30 rounded-full px-2 py-0.5">
+                    Préparée
+                  </span>
+                )}
+                <span className={`text-xs px-2 py-0.5 rounded-full ${libraryDetail.mode === "hazardous" ? "bg-purple-500/20 text-purple-300" : "bg-fuchsia-500/20 text-fuchsia-300"}`}>
+                  {libraryDetail.mode === "hazardous" ? "Hazardous" : "Manuel"}
+                </span>
+              </div>
             </div>
             <p className="text-xs text-slate-500">{libraryDetail.date}</p>
+            {!libraryDetail.totals && (
+              <p className="text-xs text-slate-500">Durée totale estimée : {fmtDuration(estimateQueueTotalSec(libraryDetail.queue))}</p>
+            )}
 
             <div className="space-y-2 pt-2 border-t border-slate-800">
               <p className="text-xs uppercase tracking-wide text-slate-500">Vitesses</p>
@@ -1099,10 +1191,10 @@ export default function FullPower({ runnerName, onToast }) {
 
             <div className="flex gap-3">
               <button
-                onClick={() => replaySavedSession(libraryDetail)}
+                onClick={() => loadSessionConfig(libraryDetail)}
                 className="flex-1 bg-gradient-to-r from-fuchsia-600 to-purple-600 hover:opacity-90 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2"
               >
-                <RotateCcw size={18} /> Refaire cette séance
+                <RotateCcw size={18} /> Charger cette séance
               </button>
               <button
                 onClick={() => exportLibrarySession(libraryDetail)}
@@ -1140,7 +1232,14 @@ export default function FullPower({ runnerName, onToast }) {
           {!isHazardous && (
             <div className={`w-full rounded-2xl border ${PHASE_META[current.kind].border} ${PHASE_META[current.kind].bg} p-6 flex flex-col items-center`}>
               <span className={`text-sm font-bold tracking-widest ${PHASE_META[current.kind].color}`}>{PHASE_META[current.kind].label}</span>
-              <span className="text-6xl font-mono font-bold mt-2 tabular-nums">{fmtTime(secondsLeft)}</span>
+              <div className="flex items-end gap-3 mt-2">
+                <span className="text-6xl font-mono font-bold tabular-nums">{fmtTime(secondsLeft)}</span>
+                {(current.kind === "work" || current.kind === "recup") && current.repsInSeriesTotal > 0 && (
+                  <span className="text-lg font-mono font-semibold text-slate-400 pb-1.5 tabular-nums">
+                    {current.repIndexInSeries}/{current.repsInSeriesTotal}
+                  </span>
+                )}
+              </div>
             </div>
           )}
 
@@ -1181,6 +1280,7 @@ export default function FullPower({ runnerName, onToast }) {
           ) : current.kind !== "finished" && (current.kind === "work" || current.kind === "recup") && (
             <div className="w-full bg-slate-900/70 rounded-2xl border border-fuchsia-500/20 p-4 flex flex-col items-center">
               <NeedleGauge currentSpeed={simMode ? simSpeed : liveSpeed} targetSpeed={targetSpeed} />
+              <p className="text-[10px] text-slate-600 -mt-1">Repère jaune = objectif, au milieu de la zone verte</p>
               <div className="flex justify-between w-full mt-1 text-center">
                 <div>
                   <p className="text-5xl font-mono font-black leading-none tabular-nums">{allureFromKmh(simMode ? simSpeed : liveSpeed)}</p>
@@ -1215,6 +1315,36 @@ export default function FullPower({ runnerName, onToast }) {
               <span className="text-5xl font-mono font-bold mt-2 text-fuchsia-300">
                 {vma > 0 ? ((liveSpeed / vma) * 100).toFixed(0) : 0}%
               </span>
+            </div>
+          )}
+
+          {(current.kind === "recup" || current.kind === "restSeries") && lastRepRecapRef.current && (
+            <div className="w-full bg-slate-900/70 rounded-2xl border border-fuchsia-500/20 p-4 space-y-2">
+              <p className="text-xs uppercase tracking-wide text-slate-500">
+                Récap répétition{lastRepRecapRef.current.repsInSeriesTotal > 0 ? ` ${lastRepRecapRef.current.repIndexInSeries}/${lastRepRecapRef.current.repsInSeriesTotal}` : ""}
+              </p>
+              <StatRow
+                label="Distance parcourue / prévue"
+                value={`${fmtDistance(lastRepRecapRef.current.actualDist)} / ${fmtDistance(lastRepRecapRef.current.theoreticalDist)}`}
+                sub={lastRepRecapRef.current.theoreticalDist > 0
+                  ? `${lastRepRecapRef.current.actualDist >= lastRepRecapRef.current.theoreticalDist ? "+" : ""}${Math.round(((lastRepRecapRef.current.actualDist - lastRepRecapRef.current.theoreticalDist) / lastRepRecapRef.current.theoreticalDist) * 100)}% vs objectif`
+                  : undefined}
+              />
+            </div>
+          )}
+
+          {current.kind === "restSeries" && lastSeriesRecapRef.current && (
+            <div className="w-full bg-slate-900/70 rounded-2xl border border-violet-500/30 p-4 space-y-2">
+              <p className="text-xs uppercase tracking-wide text-slate-500">
+                Récap série{lastSeriesRecapRef.current.seriesLabel ? ` — ${lastSeriesRecapRef.current.seriesLabel}` : ""} (travail uniquement)
+              </p>
+              <StatRow
+                label="Distance parcourue / prévue"
+                value={`${fmtDistance(lastSeriesRecapRef.current.actualDist)} / ${fmtDistance(lastSeriesRecapRef.current.theoreticalDist)}`}
+                sub={lastSeriesRecapRef.current.theoreticalDist > 0
+                  ? `${lastSeriesRecapRef.current.actualDist >= lastSeriesRecapRef.current.theoreticalDist ? "+" : ""}${Math.round(((lastSeriesRecapRef.current.actualDist - lastSeriesRecapRef.current.theoreticalDist) / lastSeriesRecapRef.current.theoreticalDist) * 100)}% vs objectif`
+                  : undefined}
+              />
             </div>
           )}
 
@@ -1254,6 +1384,13 @@ export default function FullPower({ runnerName, onToast }) {
                 <StatRow label="Temps de travail" value={fmtDuration(totalWorkTime)} />
                 <StatRow label="Temps de récupération" value={fmtDuration(totalRecupTime)} />
                 <StatRow label="Distance totale" value={fmtDistance(totalDistanceAll)} />
+                <StatRow
+                  label="Distance de travail réalisée / prévue"
+                  value={`${fmtDistance(workDistanceAll)} / ${fmtDistance(theoreticalTotalWorkDist)}`}
+                  sub={theoreticalTotalWorkDist > 0
+                    ? `${workDistanceAll >= theoreticalTotalWorkDist ? "+" : ""}${Math.round(((workDistanceAll - theoreticalTotalWorkDist) / theoreticalTotalWorkDist) * 100)}% vs objectif, toutes répétitions de travail confondues (hors récup')`
+                    : undefined}
+                />
               </div>
 
               {tracePointsRef.current.length > 5 && (
@@ -1345,6 +1482,7 @@ function NeedleGauge({ currentSpeed, targetSpeed }) {
       <path d={`M ${left.x} ${left.y} A 85 85 0 0 1 ${innerLeft.x} ${innerLeft.y}`} fill="none" stroke="#c026d3" strokeWidth="10" strokeLinecap="round" />
       <path d={`M ${innerLeft.x} ${innerLeft.y} A 85 85 0 0 1 ${innerRight.x} ${innerRight.y}`} fill="none" stroke="#22c55e" strokeWidth="10" strokeLinecap="round" />
       <path d={`M ${innerRight.x} ${innerRight.y} A 85 85 0 0 1 ${right.x} ${right.y}`} fill="none" stroke="#ec4899" strokeWidth="10" strokeLinecap="round" />
+      <GaugeTargetTick color="#facc15" />
       <g transform={`translate(100,100) rotate(${angle})`}>
         <line x1="0" y1="0" x2="0" y2="-75" stroke="#f5d0fe" strokeWidth="3" strokeLinecap="round" />
       </g>

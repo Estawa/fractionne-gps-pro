@@ -42,7 +42,12 @@ export function buildManualQueue({ repTypes, seriesList, globalRepeatCount, warm
         const isLastSerieRepeat = sr === serieRepeat - 1;
         units.forEach((rt, uIdx) => {
           const isVeryLastUnit = isLastSerieRepeat && uIdx === units.length - 1;
-          const workPhase = { kind: "work", pct: rt.workPct, seconds: rt.workSec, repTypeId: rt.id, seriesLabel: serie.label || `Série ${sIdx + 1}` };
+          const workPhase = {
+            kind: "work", pct: rt.workPct, seconds: rt.workSec, repTypeId: rt.id,
+            seriesLabel: serie.label || `Série ${sIdx + 1}`,
+            repIndexInSeries: sr * units.length + uIdx + 1,
+            repsInSeriesTotal: serieRepeat * units.length,
+          };
           if (pendingSeriesStart && startLatencySec > 0) {
             workPhase.latencySec = startLatencySec;
           }
@@ -51,7 +56,12 @@ export function buildManualQueue({ repTypes, seriesList, globalRepeatCount, warm
           // Dernière répétition de la série et une pause de série va suivre : on saute la
           // récup individuelle pour éviter un double repos (la pause de série suffit).
           if (!(isVeryLastUnit && willHaveSeriesBreak)) {
-            queue.push({ kind: "recup", pct: rt.recupPct, seconds: rt.recupSec, repTypeId: rt.id, seriesLabel: serie.label || `Série ${sIdx + 1}` });
+            queue.push({
+              kind: "recup", pct: rt.recupPct, seconds: rt.recupSec, repTypeId: rt.id,
+              seriesLabel: serie.label || `Série ${sIdx + 1}`,
+              repIndexInSeries: workPhase.repIndexInSeries,
+              repsInSeriesTotal: workPhase.repsInSeriesTotal,
+            });
           }
         });
       }
