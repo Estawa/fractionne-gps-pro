@@ -13,7 +13,7 @@ import {
   useWakeLock, saveActiveSession, loadActiveSession, clearActiveSession,
   APP_VERSION, exportSessionToFile, readSessionFile,
   createSpeedSmoother, TraceMap, googleMapsRouteUrl,
-  CountSelect, DurationField, theoreticalDistanceMeters, GaugeTargetTick,
+  CountSelect, DurationField, DurationSelectField, theoreticalDistanceMeters, GaugeTargetTick,
 } from "../shared.jsx";
 import { buildManualQueue, generateHazardousQueue } from "./engine.js";
 import { pickText } from "./personalization.js";
@@ -970,8 +970,8 @@ export default function FullPower({ runnerName, onToast }) {
               </div>
 
               <div className="bg-slate-900/70 rounded-2xl p-4 border border-fuchsia-500/20 grid grid-cols-2 gap-3">
-                <MiniField label="Échauffement (s)" value={warmupSec} onChange={setWarmupSec} />
-                <MiniField label="Récup' finale (s)" value={finalRecupSec} onChange={setFinalRecupSec} />
+                <DurationSelectField label="Échauffement" valueSec={warmupSec} onChange={setWarmupSec} />
+                <DurationSelectField label="Récup' finale" valueSec={finalRecupSec} onChange={setFinalRecupSec} />
                 <MiniField
                   label="Latence avant régulation (1ère rép. de chaque série, s)"
                   value={startLatencySec}
@@ -1020,9 +1020,9 @@ export default function FullPower({ runnerName, onToast }) {
                 <p className="text-xs text-slate-500">
                   Tu ne verras pas la séance à l'avance. Indique juste les trois durées ci-dessous, l'application génère le reste au hasard, de façon cohérente.
                 </p>
-                <MiniField label="Échauffement (s)" value={hzWarmupSec} onChange={setHzWarmupSec} full />
+                <DurationSelectField label="Échauffement" valueSec={hzWarmupSec} onChange={setHzWarmupSec} full />
                 <MiniField label="Temps de travail désiré (s)" value={hzWorkTotalSec} onChange={setHzWorkTotalSec} full />
-                <MiniField label="Récup' de fin de séance (s)" value={hzFinalRecupSec} onChange={setHzFinalRecupSec} full />
+                <DurationSelectField label="Récup' de fin de séance" valueSec={hzFinalRecupSec} onChange={setHzFinalRecupSec} full />
                 <p className="text-xs text-slate-500">
                   Soit {fmtTime(hzWarmupSec)} d'échauffement, {fmtTime(hzWorkTotalSec)} de travail et {fmtTime(hzFinalRecupSec)} de récup' finale.
                 </p>
