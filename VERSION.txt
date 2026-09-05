@@ -1,7 +1,7 @@
 Fractionné GPS Pro — suivi de version
 ======================================
 
-Version actuelle : 1.7.0
+Version actuelle : 1.8.0
 Date : 5 septembre 2026
 
 Ce numéro est aussi affiché discrètement dans l'application, à côté du titre
@@ -13,6 +13,14 @@ version en cas de doute.
 
 Historique
 ----------
+1.8.0 (5 septembre 2026) — Échauffement et récup' finale en minutes:secondes.
+  - Les champs "Échauffement" et "Récup' finale" du paramétrage de séance sont
+    désormais saisis en minutes:secondes via deux menus déroulants (au lieu
+    d'un champ en secondes brutes), en mode Simple et Full Power (y compris
+    le Hazardous Mode). Nouveau composant DurationSelectField (src/shared.jsx).
+  - Aucun changement du modèle de données : les valeurs restent stockées en
+    secondes totales en interne, comme avant.
+
 1.7.0 (5 septembre 2026) — 7 demandes de modification, mode Simple et Full Power.
   - Nombre de répétitions choisi via un menu déroulant plutôt qu'un champ libre : dans
     le mode Simple ("Répétitions / série") et en Full Power (nombre de répétitions d'un

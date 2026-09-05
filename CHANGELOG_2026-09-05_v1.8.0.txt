@@ -1,0 +1,18 @@
+Fractionné GPS Pro — Changelog du 5 septembre 2026 (v1.8.0)
+=============================================================
+
+Échauffement et récup' finale en minutes:secondes, via menus déroulants.
+
+-> Dans l'écran de paramétrage d'une séance, les champs "Échauffement" et
+   "Récup' finale" (mode Simple, Full Power manuel, et Hazardous Mode) ne se
+   saisissent plus en secondes brutes tapées au clavier : on choisit
+   désormais les minutes puis les secondes dans deux menus déroulants,
+   comme pour le nombre de répétitions.
+
+-> Rien ne change dans le fonctionnement de l'appli : en interne, la durée
+   reste calculée et stockée en secondes totales, exactement comme avant.
+   Les séances déjà enregistrées dans les bibliothèques (Simple et Full
+   Power) restent donc parfaitement compatibles.
+
+Nouveau composant technique : DurationSelectField (src/shared.jsx), utilisé
+en remplacement des anciens champs texte pour ces deux réglages précis.
