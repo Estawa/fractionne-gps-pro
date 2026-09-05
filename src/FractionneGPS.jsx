@@ -12,6 +12,7 @@ import {
   useWakeLock, saveActiveSession, loadActiveSession, clearActiveSession,
   APP_VERSION, exportSessionToFile, readSessionFile,
   createSpeedSmoother, TraceMap, googleMapsRouteUrl,
+  CountSelect, DurationField, theoreticalDistanceMeters, GaugeTargetTick,
 } from "./shared.jsx";
 
 const ACTIVE_SESSION_KEY = "activeSession-simple";
@@ -254,6 +255,17 @@ function segmentCharge(distMeters, timeSec, vmaKmh) {
   return (avgPct / 100) * (timeSec / 60);
 }
 
+// Durée totale estimée d'une séance à partir de sa config sauvegardée (même formule que
+// `estimatedTotalSec` à l'écran de configuration), utilisée pour l'affichage bibliothèque.
+function estimateConfigTotalSec(c) {
+  if (!c) return 0;
+  const reps = Number(c.reps) || 0;
+  const series = Number(c.series) || 0;
+  const workBlock = reps * (Number(c.workSec) || 0) + Math.max(0, reps - 1) * (Number(c.restSec) || 0);
+  const seriesBlock = series * workBlock + Math.max(0, series - 1) * (Number(c.restSeriesSec) || 0);
+  return (Number(c.warmupSec) || 0) + seriesBlock + (Number(c.finalRecupSec) || 0);
+}
+
 // Convertit une distance cible (m) à une allure %VMA donnée en durée (s), selon la VMA de l'utilisateur
 function distanceToSeconds(distMeters, pctVma, vmaKmh) {
   const speedKmh = vmaKmh * (pctVma / 100);
@@ -396,6 +408,11 @@ export default function FractionneGPS() {
     setResumeSnapshot(null);
   }
 
+  // Récap "distance réalisée / distance prévue" de la dernière répétition de travail
+  // terminée, et de la dernière série achevée — affichés pendant les phases de récup'.
+  const lastRepRecapRef = useRef(null); // { actualDist, theoreticalDist, series, rep }
+  const lastSeriesRecapRef = useRef(null); // { actualDist, theoreticalDist, series }
+
   // Accumulateurs (mètres et secondes) — série en cours
   const seriesAccRef = useRef({ series: 1, effortDist: 0, effortTime: 0, recupDist: 0, recupTime: 0 });
   // Accumulateurs — séance entière
@@ -465,6 +482,25 @@ export default function FractionneGPS() {
           next = { ...prev, secondsLeft: prev.secondsLeft - 1 };
         } else {
           next = nextPhase(prev, cfg);
+          // Une répétition de travail vient de se terminer : on capture son récap
+          // (distance réalisée / distance théorique à la vitesse cible), avant que le
+          // reset automatique de `distance` (sur changement de phase) n'efface la valeur.
+          if (prev.phase === "effort") {
+            const theoreticalRepDist = theoreticalDistanceMeters(effortSpeed, cfg.workSec);
+            lastRepRecapRef.current = {
+              actualDist: distanceRef.current, theoreticalDist: theoreticalRepDist,
+              series: prev.series, rep: prev.rep,
+            };
+            // Dernière répétition de la série (qu'elle enchaîne sur une pause de série ou,
+            // pour la toute dernière série, sur une récup' normale) : récap de la série entière.
+            if (prev.rep >= cfg.reps) {
+              lastSeriesRecapRef.current = {
+                actualDist: seriesAccRef.current.effortDist,
+                theoreticalDist: cfg.reps * theoreticalRepDist,
+                series: prev.series,
+              };
+            }
+          }
           if (next.phase === "finished") setStatus("paused");
         }
         if (next.phase === "finished") {
@@ -818,6 +854,8 @@ export default function FractionneGPS() {
     speedSmootherRef.current = createSpeedSmoother();
     setRun({ phase: initialPhase, series: 1, rep: 1, secondsLeft: initialSeconds });
     setDistance(0);
+    lastRepRecapRef.current = null;
+    lastSeriesRecapRef.current = null;
     seriesAccRef.current = { series: 1, effortDist: 0, effortTime: 0, recupDist: 0, recupTime: 0 };
     globalAccRef.current = {
       effortDist: 0, effortTime: 0,
@@ -900,6 +938,7 @@ export default function FractionneGPS() {
   const warmupFinalTime = gAcc.warmupFinalTime;
   const totalDistanceAll = gAcc.effortDist + gAcc.recupDist + gAcc.restSeriesDist + warmupFinalDist;
   const workDistance = gAcc.effortDist;
+  const theoreticalTotalWorkDist = cfg.series * cfg.reps * theoreticalDistanceMeters(effortSpeed, cfg.workSec);
   const recupDistanceAll = gAcc.recupDist + gAcc.restSeriesDist;
   const workAvgSpeed = gAcc.effortTime > 0 ? (gAcc.effortDist / gAcc.effortTime) * 3.6 : 0;
   const workAvgPctVma = vma > 0 ? (workAvgSpeed / vma) * 100 : 0;
@@ -1079,7 +1118,14 @@ export default function FractionneGPS() {
             <div key={s.id} className="bg-slate-900 rounded-2xl border border-slate-800 p-4 space-y-2">
               <div className="flex items-start justify-between gap-2">
                 <button onClick={() => openLibraryDetail(s)} className="text-left flex-1">
-                  <p className="font-semibold text-slate-100">{s.title}</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-semibold text-slate-100">{s.title}</p>
+                    {!s.recap && (
+                      <span className="text-[10px] uppercase tracking-wide bg-sky-500/15 text-sky-400 border border-sky-500/30 rounded-full px-2 py-0.5">
+                        Préparée
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-slate-500">{s.date}</p>
                 </button>
                 <div className="flex items-center gap-1">
@@ -1101,7 +1147,13 @@ export default function FractionneGPS() {
               </div>
               <button onClick={() => openLibraryDetail(s)} className="text-left w-full space-y-2">
                 <p className="text-xs text-slate-400 font-mono">
-                  VMA {s.config?.vma} km/h · {s.config?.effortPct}%/{s.config?.recupPct}% VMA · {s.config?.series}×{s.config?.reps} · {s.config?.workSec}-{s.config?.restSec}
+                  VMA {s.config?.vma} km/h · {s.config?.effortPct}%/{s.config?.recupPct}% VMA · {s.config?.series}×{s.config?.reps} · {fmtTime(s.config?.workSec || 0)}-{fmtTime(s.config?.restSec || 0)}
+                </p>
+                <p className="text-xs text-slate-500">
+                  Durée totale estimée : {fmtDuration(estimateConfigTotalSec(s.config))}
+                  {(s.config?.warmupSec > 0 || s.config?.finalRecupSec > 0) && (
+                    <> · échauf. {fmtTime(s.config?.warmupSec || 0)} + récup&apos; finale {fmtTime(s.config?.finalRecupSec || 0)}</>
+                  )}
                 </p>
                 {s.recap && (
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-300 pt-1 border-t border-slate-800">
@@ -1119,10 +1171,10 @@ export default function FractionneGPS() {
                 )}
               </button>
               <button
-                onClick={() => replaySavedSession(s)}
+                onClick={() => loadSessionConfig(s)}
                 className="w-full mt-1 bg-slate-100 text-slate-950 text-sm font-semibold rounded-xl py-2 flex items-center justify-center gap-2"
               >
-                <RotateCcw size={14} /> Refaire cette séance
+                <RotateCcw size={14} /> Charger cette séance
               </button>
             </div>
             ))}
@@ -1133,11 +1185,24 @@ export default function FractionneGPS() {
       {screen === "libraryDetail" && libraryDetail && (
         <div className="w-full max-w-md space-y-4">
           <div className="bg-slate-900 rounded-2xl border border-slate-800 p-5 space-y-4">
-            <h2 className="text-lg font-bold text-slate-100">{libraryDetail.title}</h2>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-lg font-bold text-slate-100">{libraryDetail.title}</h2>
+              {!libraryDetail.recap && (
+                <span className="text-[10px] uppercase tracking-wide bg-sky-500/15 text-sky-400 border border-sky-500/30 rounded-full px-2 py-0.5">
+                  Préparée
+                </span>
+              )}
+            </div>
             <p className="text-xs text-slate-500">{libraryDetail.date}</p>
 
             <p className="text-xs text-slate-400 font-mono pt-2 border-t border-slate-800">
-              VMA {libraryDetail.config?.vma} km/h · {libraryDetail.config?.effortPct}%/{libraryDetail.config?.recupPct}% VMA · {libraryDetail.config?.series}×{libraryDetail.config?.reps} · {libraryDetail.config?.workSec}-{libraryDetail.config?.restSec}
+              VMA {libraryDetail.config?.vma} km/h · {libraryDetail.config?.effortPct}%/{libraryDetail.config?.recupPct}% VMA · {libraryDetail.config?.series}×{libraryDetail.config?.reps} · {fmtTime(libraryDetail.config?.workSec || 0)}-{fmtTime(libraryDetail.config?.restSec || 0)}
+            </p>
+            <p className="text-xs text-slate-500">
+              Durée totale estimée : {fmtDuration(estimateConfigTotalSec(libraryDetail.config))}
+              {(libraryDetail.config?.warmupSec > 0 || libraryDetail.config?.finalRecupSec > 0) && (
+                <> · échauf. {fmtTime(libraryDetail.config?.warmupSec || 0)} + récup&apos; finale {fmtTime(libraryDetail.config?.finalRecupSec || 0)}</>
+              )}
             </p>
 
             {libraryDetail.recap && (
@@ -1182,16 +1247,10 @@ export default function FractionneGPS() {
 
             <div className="flex gap-3 pt-2">
               <button
-                onClick={() => replaySavedSession(libraryDetail)}
+                onClick={() => loadSessionConfig(libraryDetail)}
                 className="flex-1 bg-orange-500 hover:bg-orange-400 text-slate-950 font-semibold rounded-xl py-3 flex items-center justify-center gap-2"
               >
-                <RotateCcw size={18} /> Refaire cette séance
-              </button>
-              <button
-                onClick={() => loadSessionConfig(libraryDetail)}
-                className="bg-slate-800 text-slate-300 rounded-xl px-4 flex items-center justify-center text-sm"
-              >
-                Modifier
+                <RotateCcw size={18} /> Charger cette séance
               </button>
               <button
                 onClick={() => exportLibrarySession(libraryDetail)}
@@ -1254,11 +1313,11 @@ export default function FractionneGPS() {
               <TimerIcon size={14} className="text-slate-300" /> Structure de la séance
             </p>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Effort (s)" value={workSec} onChange={setWorkSec} />
-              <Field label="Récup' (s)" value={restSec} onChange={setRestSec} />
-              <Field label="Répétitions / série" value={reps} onChange={setReps} />
+              <DurationField label="Effort" valueSec={workSec} onChange={setWorkSec} />
+              <DurationField label="Récup'" valueSec={restSec} onChange={setRestSec} />
+              <CountSelect label="Répétitions / série" value={reps} onChange={setReps} max={40} />
               <Field label="Nombre de séries" value={series} onChange={setSeries} />
-              <Field label="Pause entre séries (s)" value={restSeriesSec} onChange={setRestSeriesSec} full />
+              <DurationField label="Pause entre séries" valueSec={restSeriesSec} onChange={setRestSeriesSec} full />
             </div>
             <button
               onClick={() => { setWorkSec(30); setRestSec(30); setReps(9); setSeries(3); setRestSeriesSec(180); }}
@@ -1343,7 +1402,12 @@ export default function FractionneGPS() {
           {/* Bloc phase */}
           <div className={`w-full rounded-2xl border ${meta.border} ${meta.bg} p-6 flex flex-col items-center`}>
             <span className={`text-sm font-bold tracking-widest ${meta.color}`}>{meta.label}</span>
-            <span className="text-6xl font-mono font-bold mt-2 tabular-nums">{fmtTime(run.secondsLeft)}</span>
+            <div className="flex items-end gap-3 mt-2">
+              <span className="text-6xl font-mono font-bold tabular-nums">{fmtTime(run.secondsLeft)}</span>
+              {(run.phase === "effort" || run.phase === "recup") && (
+                <span className="text-lg font-mono font-semibold text-slate-400 pb-1.5 tabular-nums">{run.rep}/{cfg.reps}</span>
+              )}
+            </div>
           </div>
 
           {/* Compteurs permanents : distance depuis le début de la séance, distance de travail
@@ -1381,11 +1445,13 @@ export default function FractionneGPS() {
                         <path d={`M ${gaugePoints.left.x} ${gaugePoints.left.y} A 85 85 0 0 1 ${gaugePoints.innerLeft.x} ${gaugePoints.innerLeft.y}`} fill="none" stroke="#38bdf8" strokeWidth="10" strokeLinecap="round" />
                         <path d={`M ${gaugePoints.innerLeft.x} ${gaugePoints.innerLeft.y} A 85 85 0 0 1 ${gaugePoints.innerRight.x} ${gaugePoints.innerRight.y}`} fill="none" stroke="#22c55e" strokeWidth="10" strokeLinecap="round" />
                         <path d={`M ${gaugePoints.innerRight.x} ${gaugePoints.innerRight.y} A 85 85 0 0 1 ${gaugePoints.right.x} ${gaugePoints.right.y}`} fill="none" stroke="#f97316" strokeWidth="10" strokeLinecap="round" />
+                        <GaugeTargetTick color="#facc15" />
                         <g transform={`translate(100,100) rotate(${needleAngle})`}>
                           <line x1="0" y1="0" x2="0" y2="-75" stroke="#f1f5f9" strokeWidth="3" strokeLinecap="round" />
                         </g>
                         <circle cx="100" cy="100" r="5" fill="#f1f5f9" />
                       </svg>
+                      <p className="text-[10px] text-slate-600 -mt-1">Repère jaune = objectif, au milieu de la zone verte</p>
                       <div className="flex justify-between w-full mt-1 text-center">
                         <div>
                           <p className="text-5xl font-mono font-black leading-none tabular-nums">{allureFromKmh(currentSpeed)}</p>
@@ -1426,6 +1492,34 @@ export default function FractionneGPS() {
               )}
 
               <p className="text-xs text-slate-500">Distance phase : {Math.round(distance)} m</p>
+
+              {(run.phase === "recup" || run.phase === "restSeries") && lastRepRecapRef.current && (
+                <div className="w-full bg-slate-900 rounded-2xl border border-slate-800 p-4 space-y-2">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">
+                    Récap répétition {lastRepRecapRef.current.rep}/{cfg.reps} (série {lastRepRecapRef.current.series})
+                  </p>
+                  <StatRow
+                    label="Distance parcourue / prévue"
+                    value={`${fmtDistance(lastRepRecapRef.current.actualDist)} / ${fmtDistance(lastRepRecapRef.current.theoreticalDist)}`}
+                    sub={lastRepRecapRef.current.theoreticalDist > 0
+                      ? `${lastRepRecapRef.current.actualDist >= lastRepRecapRef.current.theoreticalDist ? "+" : ""}${Math.round(((lastRepRecapRef.current.actualDist - lastRepRecapRef.current.theoreticalDist) / lastRepRecapRef.current.theoreticalDist) * 100)}% vs objectif`
+                      : undefined}
+                  />
+                </div>
+              )}
+
+              {run.phase === "restSeries" && lastSeriesRecapRef.current && (
+                <div className="w-full bg-slate-900 rounded-2xl border border-violet-500/30 p-4 space-y-2">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Récap série {lastSeriesRecapRef.current.series} (travail uniquement)</p>
+                  <StatRow
+                    label="Distance parcourue / prévue"
+                    value={`${fmtDistance(lastSeriesRecapRef.current.actualDist)} / ${fmtDistance(lastSeriesRecapRef.current.theoreticalDist)}`}
+                    sub={lastSeriesRecapRef.current.theoreticalDist > 0
+                      ? `${lastSeriesRecapRef.current.actualDist >= lastSeriesRecapRef.current.theoreticalDist ? "+" : ""}${Math.round(((lastSeriesRecapRef.current.actualDist - lastSeriesRecapRef.current.theoreticalDist) / lastSeriesRecapRef.current.theoreticalDist) * 100)}% vs objectif`
+                      : undefined}
+                  />
+                </div>
+              )}
 
               {(run.phase === "recup" || run.phase === "restSeries") && (
                 <div className="w-full bg-slate-900 rounded-2xl border border-slate-800 p-4 space-y-2">
@@ -1495,7 +1589,13 @@ export default function FractionneGPS() {
               <div className="space-y-2 pt-2 border-t border-slate-800">
                 <p className="text-xs uppercase tracking-wide text-slate-500">Distances</p>
                 <StatRow label="Distance totale" value={fmtDistance(totalDistanceAll)} />
-                <StatRow label="Distance de travail" value={fmtDistance(workDistance)} />
+                <StatRow
+                  label="Distance de travail réalisée / prévue"
+                  value={`${fmtDistance(workDistance)} / ${fmtDistance(theoreticalTotalWorkDist)}`}
+                  sub={theoreticalTotalWorkDist > 0
+                    ? `${workDistance >= theoreticalTotalWorkDist ? "+" : ""}${Math.round(((workDistance - theoreticalTotalWorkDist) / theoreticalTotalWorkDist) * 100)}% vs objectif, toutes répétitions de travail confondues (hors récup')`
+                    : undefined}
+                />
                 <StatRow label="Distance de récupération" value={fmtDistance(recupDistanceAll)} />
                 <StatRow label="Distance échauffement + récup' finale" value={fmtDistance(warmupFinalDist)} />
               </div>

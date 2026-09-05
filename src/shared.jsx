@@ -6,7 +6,7 @@ import { useRef, useCallback, useEffect } from "react";
 
 // --- Numéro de version de l'application ---
 // À incrémenter à chaque nouvel envoi (voir aussi VERSION.txt à la racine du projet).
-export const APP_VERSION = "1.6.0";
+export const APP_VERSION = "1.7.0";
 
 // --- Wake Lock : empêche l'écran de s'éteindre tout seul pendant une séance active ---
 // Le verrou est automatiquement relâché par le système quand l'onglet passe en
@@ -430,6 +430,71 @@ export function googleMapsRouteUrl(points, maxWaypoints = 40) {
   if (sampled[sampled.length - 1] !== points[points.length - 1]) sampled.push(points[points.length - 1]);
   const path = sampled.map(p => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join("/");
   return `https://www.google.com/maps/dir/${path}?travelmode=walking`;
+}
+
+// --- Sélection d'un nombre de répétitions/occurrences sous forme de menu déroulant ---
+// (au lieu d'un champ numérique libre) — mode Simple et Full Power.
+export function CountSelect({ label, value, onChange, max = 40, full }) {
+  const options = Array.from({ length: max }, (_, i) => i + 1);
+  return (
+    <div className={full ? "col-span-2" : ""}>
+      <label className="text-xs text-slate-400">{label}</label>
+      <select
+        value={value}
+        onChange={e => onChange(parseInt(e.target.value) || 1)}
+        className="w-full mt-1 bg-slate-800 rounded-lg px-3 py-2 font-mono outline-none focus:ring-2 focus:ring-slate-500"
+      >
+        {options.map(n => <option key={n} value={n}>{n}</option>)}
+      </select>
+    </div>
+  );
+}
+
+// --- Saisie d'une durée en minutes:secondes (au lieu de secondes brutes) ---
+// La valeur manipulée par l'appli reste des secondes totales (aucun changement de modèle
+// de données) : ce composant ne fait que convertir à l'affichage/à la saisie.
+export function DurationField({ label, valueSec, onChange, full }) {
+  const totalSec = Math.max(0, Math.floor(Number(valueSec) || 0));
+  const mm = Math.floor(totalSec / 60);
+  const ss = totalSec % 60;
+  function setMin(v) {
+    const m = Math.max(0, Math.floor(Number(v)) || 0);
+    onChange(m * 60 + ss);
+  }
+  function setSec(v) {
+    const s = Math.max(0, Math.min(59, Math.floor(Number(v)) || 0));
+    onChange(mm * 60 + s);
+  }
+  return (
+    <div className={full ? "col-span-2" : ""}>
+      <label className="text-xs text-slate-400">{label}</label>
+      <div className="flex items-center gap-1.5 mt-1">
+        <input
+          type="number" min="0" value={mm} onChange={e => setMin(e.target.value)}
+          className="w-full bg-slate-800 rounded-lg px-2 py-2 font-mono text-center outline-none focus:ring-2 focus:ring-slate-500"
+        />
+        <span className="text-[11px] text-slate-500 shrink-0">min</span>
+        <input
+          type="number" min="0" max="59" value={ss} onChange={e => setSec(e.target.value)}
+          className="w-full bg-slate-800 rounded-lg px-2 py-2 font-mono text-center outline-none focus:ring-2 focus:ring-slate-500"
+        />
+        <span className="text-[11px] text-slate-500 shrink-0">s</span>
+      </div>
+    </div>
+  );
+}
+
+// Distance théorique (m) parcourue à une vitesse cible (km/h) pendant une durée (s) donnée —
+// sert de référence pour les récapitulatifs "distance réalisée / distance prévue".
+export function theoreticalDistanceMeters(speedKmh, seconds) {
+  return ((speedKmh || 0) * 1000 / 3600) * Math.max(0, seconds || 0);
+}
+
+// Petit repère fixe marquant le centre de la zone verte (= la cible) sur le cadran,
+// pour bien distinguer "objectif" (fixe, au milieu) et "aiguille" (mobile, position actuelle).
+export function GaugeTargetTick({ color = "#f1f5f9" }) {
+  const p = gaugePoint(0, 95);
+  return <circle cx={p.x} cy={p.y} r="3" fill={color} />;
 }
 
 export function StatRow({ label, value, sub }) {
