@@ -1,8 +1,8 @@
 Fractionné GPS Pro — suivi de version
 ======================================
 
-Version actuelle : 1.6.0
-Date : 2 septembre 2026
+Version actuelle : 1.7.0
+Date : 5 septembre 2026
 
 Ce numéro est aussi affiché discrètement dans l'application, à côté du titre
 (mode Simple et mode Full Power).
@@ -13,6 +13,27 @@ version en cas de doute.
 
 Historique
 ----------
+1.7.0 (5 septembre 2026) — 7 demandes de modification, mode Simple et Full Power.
+  - Nombre de répétitions choisi via un menu déroulant plutôt qu'un champ libre : dans
+    le mode Simple ("Répétitions / série") et en Full Power (nombre de répétitions d'un
+    type dans une série).
+  - Durées de travail, récup' et pause entre séries saisies en minutes:secondes au lieu
+    de secondes brutes, dans le paramétrage des deux modes (src/shared.jsx :
+    composant DurationField).
+  - Bibliothèque : les séances "préparées" (pas encore réalisées) affichent désormais un
+    badge dédié et leur durée totale estimée, pour choisir sans avoir à ouvrir le détail.
+  - Sélectionner une séance depuis la bibliothèque ou l'historique charge maintenant ses
+    paramètres sur l'écran de configuration ("Charger cette séance") au lieu de lancer la
+    séance immédiatement, pour permettre des ajustements avant de démarrer.
+  - Écran de course : le numéro de la répétition en cours dans sa série ("3/9") s'affiche
+    juste à côté du chrono qui décompte, en mode Simple et Full Power.
+  - Cadran de régulation : un repère jaune fixe marque désormais le centre de la zone
+    verte (l'objectif) — l'aiguille mobile indique la vitesse actuelle par rapport à ce
+    repère fixe, pour que la position de la cible soit visuellement sans ambiguïté.
+  - Nouveaux récapitulatifs "distance parcourue / distance prévue" à la vitesse cible :
+    après chaque répétition de travail, après chaque série (travail uniquement, hors
+    récup'), et sur le total de travail de la séance entière dans le récapitulatif final.
+
 1.6.0 (2 septembre 2026) — Retours du premier vrai test course, mode Simple et Full Power.
   - Bug corrigé : une séance préparée/enregistrée pouvait se retrouver vide à la
     prochaine ouverture. Le stockage relit désormais chaque écriture aussitôt
